@@ -27,6 +27,14 @@
 и «видит журнал» значит «видит весь журнал» — экран прав так и пишет
 (`note`). Договоры режутся по строкам и полям (`contracts/service.py`,
 `Access`).
+
+Другие отделы
+─────────────
+Область «своего отдела» или «где ответственный» можно расширить отделами,
+договоры которых человек **только видит** (`scope.departments`, 28.09.2026:
+юристу ЮО показать договоры НО, не давая их править). Правка такого договора
+— отказ сервера, а не спрятанная кнопка: лист и карточка получают договор с
+`readonly` и сами правку не предлагают.
 """
 from __future__ import annotations
 
@@ -162,6 +170,8 @@ class Rights:
     levels: Mapping[str, str] = field(default_factory=lambda: _EMPTY)
     contract_rows: str = "all"
     contract_entities: frozenset[uuid.UUID] = frozenset()
+    #: Отделы, договоры которых видны вдобавок к области строк — только чтение.
+    contract_departments: frozenset[uuid.UUID] = frozenset()
     #: Поля договора: ключ поля → уровень; только записанное.
     fields: Mapping[str, str] = field(default_factory=lambda: _EMPTY)
     employee_id: uuid.UUID | None = None
@@ -205,6 +215,7 @@ class Rights:
         return {
             "rows": self.contract_rows,
             "entities": sorted(str(item) for item in self.contract_entities),
+            "departments": sorted(str(item) for item in self.contract_departments),
             "department_id": str(self.department_id) if self.department_id else None,
             "employee_id": str(self.employee_id) if self.employee_id else None,
             # Только отличающиеся от уровня договоров: скрытое и «только видит».
@@ -229,6 +240,16 @@ class Rights:
         if self.can("people", "edit"):
             out.add("people")
         return frozenset(out)
+
+
+def _uuids(raw: Any) -> set[uuid.UUID]:
+    out: set[uuid.UUID] = set()
+    for item in raw or []:
+        try:
+            out.add(uuid.UUID(str(item)))
+        except ValueError:
+            continue
+    return out
 
 
 def compute(
@@ -257,17 +278,15 @@ def compute(
     }
     scope = merged.get("contracts", ("none", {}))[1]
     rows_scope = scope.get("rows") if scope.get("rows") in ROW_SCOPES else "all"
-    entities: set[uuid.UUID] = set()
-    for raw in scope.get("entities") or []:
-        try:
-            entities.add(uuid.UUID(str(raw)))
-        except ValueError:
-            continue
+    entities = _uuids(scope.get("entities"))
+    # «Все договоры» и так видят каждый отдел — лишние отделы там ничего не значат.
+    departments = _uuids(scope.get("departments")) if rows_scope != "all" else set()
     return Rights(
         role=role,
         levels=MappingProxyType(levels),
         contract_rows=rows_scope,
         contract_entities=frozenset(entities),
+        contract_departments=frozenset(departments),
         fields=MappingProxyType(fields),
         employee_id=employee_id,
         department_id=department_id,
@@ -415,9 +434,28 @@ def clean_scope(session: Session, workspace_id: uuid.UUID, raw: Any) -> dict[str
         if known != ids:
             raise GrantError("Такого нашего юрлица нет")
         entities = sorted(str(item) for item in ids)
+    departments: list[str] = []
+    wanted_departments = raw.get("departments") or []
+    if wanted_departments and rows != "all":
+        from app.finance.contracts.models import Department
+
+        try:
+            ids = {uuid.UUID(str(item)) for item in wanted_departments}
+        except ValueError as exc:
+            raise GrantError("Отдел указан неверно") from exc
+        known = set(
+            session.scalars(
+                sa.select(Department.id).where(Department.workspace_id == workspace_id, Department.id.in_(ids))
+            )
+        )
+        if known != ids:
+            raise GrantError("Такого отдела нет")
+        departments = sorted(str(item) for item in ids)
     out: dict[str, Any] = {"rows": rows}
     if entities:
         out["entities"] = entities
+    if departments:
+        out["departments"] = departments
     return out
 
 

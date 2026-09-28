@@ -35,6 +35,7 @@ from app.finance.contracts.service import (
     _label,
     _next_amendment_position,
     _plain,
+    ensure_writable,
     get_contract,
     read_date,
     read_money,
@@ -194,6 +195,7 @@ def confirm(
         raise PermissionError("Подтверждать соглашения вам не открыто")
     registry = Registry(session, workspace)
     contract = get_contract(session, workspace, contract_id, for_update=True)
+    ensure_writable(session, registry, access, contract)
     effect = str(piece.get("effect") or "none")
     if effect not in AMENDMENT_EFFECTS:
         raise FinanceError("Такого изменения у соглашения нет")
@@ -321,11 +323,12 @@ def remove_amendment(
     if not access.edit:
         raise PermissionError("Убирать соглашения вам не открыто")
     contract = get_contract(session, workspace, contract_id, for_update=True)
+    registry = Registry(session, workspace)
+    ensure_writable(session, registry, access, contract)
     row = session.get(ContractAmendment, amendment_id)
     if row is None or row.contract_id != contract.id:
         raise NotFound("Соглашение не найдено")
     session.delete(row)
-    registry = Registry(session, workspace)
     _finish(session, registry, contract, actor, [])
     history.write(
         session,

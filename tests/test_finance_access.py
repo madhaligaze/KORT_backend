@@ -463,6 +463,52 @@ def test_dogovory_chuzhogo_otdela_i_skrytoe_pole(app: FastAPI) -> None:
     assert card["id"] == scope["employee_id"]
 
 
+def test_drugie_otdely_tolko_prosmotr(app: FastAPI) -> None:
+    """28.09.2026: администратор открывает юристу ЮО договоры НО — видеть, не править."""
+    owner = register(app)
+    yuo = department(owner, "ЮО")
+    no = department(owner, "НО")
+    department(owner, "ОБО")
+
+    def contract(number: str, dept: str) -> str:
+        response = owner.post(
+            f"{BASE}/contracts",
+            json={"values": {"executor": "BBC", "customer": f"ТОО {number}", "number": number, "department": dept}},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["contract"]["id"]
+
+    mine, theirs, closed = contract("ЮО/1", "ЮО"), contract("НО/1", "НО"), contract("ОБО/1", "ОБО")
+    employee(owner, "Юрист Второй", "+77021112244", yuo)
+    grant(owner, "department", yuo, {"contracts": {"level": "edit", "scope": {"rows": "department", "departments": [no]}}})
+    lawyer = activate(app, "+77021112244")
+
+    listing = {item["id"]: item for item in lawyer.get(f"{BASE}/contracts").json()["contracts"]}
+    assert set(listing) == {mine, theirs}
+    assert "readonly" not in listing[mine] and listing[theirs]["readonly"] is True
+    assert lawyer.get(f"{BASE}/contracts/{closed}").status_code == 404
+
+    # Свой — правится, чужой отдел — отказ словами, а не «не найден».
+    assert lawyer.patch(f"{BASE}/contracts/{mine}", json={"values": {"note": "звонили"}}).status_code == 200
+    refused = lawyer.patch(f"{BASE}/contracts/{theirs}", json={"values": {"note": "звонили"}})
+    assert refused.status_code == 400 and "только на просмотр" in refused.json()["detail"]
+    assert lawyer.delete(f"{BASE}/contracts/{theirs}").status_code == 400
+    ack = lawyer.post(f"{BASE}/contracts/{theirs}/acknowledge", json={"code": "no_signed_at", "on": True})
+    assert ack.status_code == 400
+
+    scope = lawyer.get(f"{BASE}/auth/me").json()["contracts_scope"]
+    assert scope["departments"] == [no]
+
+    # Чужой отдел в области — отказ; «все договоры» лишние отделы не хранят.
+    bad = owner.put(
+        f"{BASE}/access/department/{yuo}",
+        json={"changes": {"contracts": {"level": "edit", "scope": {"rows": "department", "departments": [str(uuid.uuid4())]}}}},
+    )
+    assert bad.status_code == 400
+    wide = grant(owner, "department", yuo, {"contracts": {"level": "view", "scope": {"rows": "all", "departments": [no]}}})
+    assert "departments" not in (wide["grants"]["contracts"].get("scope") or {})
+
+
 def test_zavedyonnyy_dogovor_ostayotsya_v_svoey_oblasti(app: FastAPI) -> None:
     """Договор из первого поля не пропадает у автора с узкой областью строк."""
     owner = register(app)

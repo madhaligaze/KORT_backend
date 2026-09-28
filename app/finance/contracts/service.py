@@ -224,6 +224,8 @@ class Access:
     #: `all` / `department` / `own` — какие договоры видны.
     rows: str = "all"
     department_ids: frozenset[uuid.UUID] = frozenset()
+    #: Отделы, договоры которых видны вдобавок к `rows`, — только чтение.
+    view_departments: frozenset[uuid.UUID] = frozenset()
     employee_id: uuid.UUID | None = None
     #: Юрлица, договоры которых видны; пусто — все.
     entity_ids: frozenset[uuid.UUID] = frozenset()
@@ -262,6 +264,7 @@ def access_of(member: Any) -> Access:
         setup=False,
         rows=rights.contract_rows,
         department_ids=frozenset({rights.department_id}) if rights.department_id else frozenset(),
+        view_departments=getattr(rights, "contract_departments", frozenset()),
         employee_id=rights.employee_id,
         entity_ids=rights.contract_entities,
         hidden=hidden,
@@ -1059,17 +1062,20 @@ def issues_of(
     out: list[dict[str, Any]] = []
     acked = contract.acknowledged or {}
 
-    def add(code: str, field_key: str, text: str, ref: str = "") -> None:
+    def add(code: str, field_key: str, text: str, ref: str = "", others: Sequence[uuid.UUID] = ()) -> None:
         mark = acked.get(code)
-        out.append(
-            {
-                "code": code,
-                "field": field_key,
-                "text": text,
-                "ref": ref,
-                "acknowledged": bool(mark) and (mark.get("ref", "") == ref),
-            }
-        )
+        item: dict[str, Any] = {
+            "code": code,
+            "field": field_key,
+            "text": text,
+            "ref": ref,
+            "acknowledged": bool(mark) and (mark.get("ref", "") == ref),
+        }
+        # Договоры, о которых замечание («номер уже есть у …»): подсказка
+        # листа ведёт к ним — где он, чей, открыть.
+        if others:
+            item["others"] = [str(other) for other in others]
+        out.append(item)
 
     if contract.executor_id is None:
         add("no_executor", "executor", "Не указан исполнитель")
@@ -1095,6 +1101,7 @@ def issues_of(
             f"Номер {contract.number.strip()} уже есть у {other}" if other else
             f"Номер {contract.number.strip()} уже есть у другого контрагента",
             ref=contract.number_key,
+            others=others,
         )
     if contract.status_id is not None:
         meaning = registry.meaning(contract.status_id)
@@ -1310,6 +1317,8 @@ class Output:
                     ],
                     "views": views_module.membership(facts_of(item, registry, mine), registry.views),
                     **({"roles": roles} if (roles := registry.roles_of(item)) else {}),
+                    # Договор «другого отдела»: виден, правка — отказ сервера.
+                    **({"readonly": True} if read_only_for(item, registry, self.access, mine) else {}),
                     "file_snapshot": (
                         {}
                         if "paid_snapshot" in self.access.hidden
@@ -1357,10 +1366,19 @@ class Output:
 
 
 def visible_to(
-    contract: Contract, registry: Registry, access: Access, people: Sequence[uuid.UUID]
+    contract: Contract,
+    registry: Registry,
+    access: Access,
+    people: Sequence[uuid.UUID],
+    *,
+    write: bool = False,
 ) -> bool:
-    """Открыт ли договор этому человеку — по строкам и юрлицам."""
-    if not access.view:
+    """Открыт ли договор этому человеку — по строкам и юрлицам.
+
+    `write` — открыт ли он на правку: договор «другого отдела»
+    (`view_departments`) виден, но не правится.
+    """
+    if not access.view or (write and not access.edit):
         return False
     # Договор без сторон — черновик, у которого юрлица ещё нет: по юрлицу его
     # не отнести ни к «своим», ни к чужим. Отсекай его отбор — он пропадал бы
@@ -1369,10 +1387,45 @@ def visible_to(
     if access.entity_ids and parties and not (parties & set(access.entity_ids)):
         return False
     if access.rows == "department":
-        return contract.department_id in access.department_ids
-    if access.rows == "own":
-        return access.employee_id is not None and access.employee_id in people
-    return True
+        own = contract.department_id in access.department_ids
+    elif access.rows == "own":
+        own = access.employee_id is not None and access.employee_id in people
+    else:
+        return True
+    if own or write:
+        return own
+    return contract.department_id is not None and contract.department_id in access.view_departments
+
+
+def read_only_for(
+    contract: Contract, registry: Registry, access: Access, people: Sequence[uuid.UUID]
+) -> bool:
+    """Договор виден, но править его нельзя: он из «другого отдела»."""
+    return (
+        access.edit
+        and bool(access.view_departments)
+        and not visible_to(contract, registry, access, people, write=True)
+    )
+
+
+class ReadOnlyContract(FinanceError):
+    """Договор открыт только на просмотр — отказ правке словами."""
+
+
+def _check_write(contract: Contract, registry: Registry, access: Access, people: Sequence[uuid.UUID]) -> None:
+    if not visible_to(contract, registry, access, people, write=True):
+        department = registry.departments.get(contract.department_id) if contract.department_id else None
+        where = f"отдела {department.code}" if department is not None else "другого отдела"
+        raise ReadOnlyContract(f"Договор {where} открыт вам только на просмотр")
+
+
+def ensure_writable(session: Session, registry: Registry, access: Access, contract: Contract) -> list[uuid.UUID]:
+    """Договор виден и открыт на правку — иначе отказ. Возвращает его людей."""
+    people_now = list(people_of(session, [contract.id]).get(contract.id, []))
+    if not visible_to(contract, registry, access, people_now):
+        raise NotFound("Договор не найден")
+    _check_write(contract, registry, access, people_now)
+    return people_now
 
 
 # ── Чтение ───────────────────────────────────────────────────────────────────
@@ -2063,6 +2116,7 @@ def patch(
     people_now = people_of(session, [contract.id]).get(contract.id, [])
     if not visible_to(contract, registry, access, people_now):
         raise NotFound("Договор не найден")
+    _check_write(contract, registry, access, people_now)
     keys = _party_order(registry, values)
     _check_access(registry, access, keys)
     for key in keys:
@@ -2253,6 +2307,7 @@ def remove(
     people_now = people_of(session, [contract.id]).get(contract.id, [])
     if not visible_to(contract, registry, access, people_now):
         raise NotFound("Договор не найден")
+    _check_write(contract, registry, access, people_now)
     contract.deleted_at = _now()
     _finish(session, registry, contract, actor, [])
     history.write(
@@ -2287,6 +2342,10 @@ def acknowledge(
     named = {pid for entries in numbers.by_key.values() for _cid, pair in entries for pid in pair if pid}
     names = {pid: party.name for pid, party in registry.parties_for(named).items()}
     people_now = people_of(session, [contract.id]).get(contract.id, [])
+    # Отметка — правка договора: чужой или «только просмотр» её не ставит.
+    if not visible_to(contract, registry, access, people_now):
+        raise NotFound("Договор не найден")
+    _check_write(contract, registry, access, people_now)
     current_issues = {
         issue["code"]: issue for issue in issues_of(contract, registry, numbers, names, people_now)
     }

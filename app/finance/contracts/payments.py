@@ -55,6 +55,7 @@ from app.finance.contracts.service import (
     Actor,
     NotFound,
     Registry,
+    ensure_writable,
     get_contract,
     people_of,
     visible_to,
@@ -344,8 +345,7 @@ def decide(
         raise FinanceError("Ждём «link», «unlink» или «auto»")
     registry = Registry(session, workspace)
     contract = get_contract(session, workspace, contract_id)
-    if not visible_to(contract, registry, access, people_of(session, [contract.id]).get(contract.id, [])):
-        raise NotFound("Договор не найден")
+    ensure_writable(session, registry, access, contract)
     operation = session.get(Operation, operation_id)
     if operation is None or operation.workspace_id != workspace.id or operation.deleted_at is not None:
         raise FinanceError("Такой операции в журнале нет")

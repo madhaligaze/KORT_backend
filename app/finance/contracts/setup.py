@@ -698,15 +698,57 @@ def _clean_blocks(blocks: Any, registry: Registry) -> list[dict[str, Any]]:
             for key, value in (block.get("defaults") or {}).items()
             if key in ("type", "subject", "status", "billing", "economic_role", "department", "own_side")
         }
-        out.append(
-            {
-                "title": str(block.get("title") or ""),
-                "filter": rule,
-                "roles": roles if isinstance(roles, dict) else {},
-                "columns": columns,
-                "defaults": defaults,
-            }
-        )
+        paint = views_module.validate_paint(block.get("paint"))
+        for item in paint:
+            for used in views_module.fields_used(item["filter"]):
+                if used not in keys:
+                    raise FinanceError(f"В подсветке поле «{used}», которого нет в реестре")
+        clean = {
+            "title": str(block.get("title") or ""),
+            "filter": rule,
+            "roles": roles if isinstance(roles, dict) else {},
+            "columns": columns,
+            "defaults": defaults,
+        }
+        choices = _clean_choices(block.get("choices"), registry)
+        if choices:
+            clean["choices"] = choices
+        if paint:
+            clean["paint"] = paint
+        out.append(clean)
+    return out
+
+
+def _clean_choices(raw: Any, registry: Registry) -> dict[str, list[str]]:
+    """Что предлагает выбор поля в этом блоке: `{поле: [значения]}`.
+
+    В «Разовых» статус — только «на исполнении» и «исполнен», как в книге
+    юротдела; в реестре у того же поля шесть значений. Значение договора это
+    не ограничивает — только то, что предлагают лист и карточка из этого блока.
+    """
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise FinanceError("Выбор значений блока записан неверно")
+    out: dict[str, list[str]] = {}
+    for key, ids in raw.items():
+        field_def = registry.field_by_key.get(str(key))
+        if field_def is None or field_def.type not in ("list", "multi_list"):
+            raise FinanceError(f"Ограничить выбор можно только у списка, а «{key}» — не список")
+        if not isinstance(ids, list):
+            raise FinanceError("Выбор значений блока записан неверно")
+        clean: list[str] = []
+        for raw_id in ids:
+            try:
+                value = registry.values.get(uuid.UUID(str(raw_id)))
+            except ValueError:
+                value = None
+            if value is None or value.field_key != field_def.key:
+                raise FinanceError(f"В списке «{field_def.title}» такого значения нет")
+            if str(value.id) not in clean:
+                clean.append(str(value.id))
+        if clean:
+            out[field_def.key] = clean
     return out
 
 

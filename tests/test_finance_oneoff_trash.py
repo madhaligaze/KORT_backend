@@ -193,6 +193,41 @@ def test_razovye_zasevayutsya_i_otbirayut(space, monkeypatch):
         assert {fresh.id, old.id, done.id}
 
 
+def test_razovye_dva_statusa_i_zelyonaya_stroka(space):
+    """28.09.2026: в «Разовых» выбор статуса — «на исполнении» и «исполнен», строка
+    «исполнен» подсвечена (как `=TRIM($E2)="исполнен"` в книге юротдела)."""
+    with finance_session() as session:
+        workspace = _ws(session, space)
+        done = _make(session, space, executor="BBC legal support", customer="ТОО Гамма", number="№ЮО/3",
+                     type="Разовая услуга", status="Исполнен")
+        going = _make(session, space, executor="BBC legal support", customer="ТОО Альфа", number="№ЮО/1",
+                      type="Разовая услуга", status="На исполнении")
+        registry = service.Registry(session, workspace)
+        statuses = {value.value: str(value.id) for value in registry.values.values() if value.field_key == "status"}
+        main = next(view for view in registry.views if view.key == "oneoff")
+        block = main.blocks[0]
+        assert block["choices"] == {"status": [statuses["На исполнении"], statuses["Исполнен"]]}
+        assert block["defaults"]["status"] == statuses["На исполнении"]
+
+        listed = {item["id"]: item for item in service.list_all(session, workspace, FULL)["contracts"]}
+        tone = {place["view"]: place.get("tone") for place in listed[str(done.id)]["views"]}
+        assert tone["oneoff"] == "done"
+        assert all("tone" not in place for place in listed[str(going.id)]["views"])
+        # В реестре подсветки нет — правило живёт у блока «Разовых».
+        assert "tone" not in next(place for place in listed[str(done.id)]["views"] if place["view"] == "main")
+
+        # Выбор — только значения списков и только у полей-списков.
+        with pytest.raises(finance_service.FinanceError):
+            setup.upsert_view(session, workspace, {"blocks": [{**block, "choices": {"number": [statuses["Исполнен"]]}}]}, main.id)
+        with pytest.raises(finance_service.FinanceError):
+            setup.upsert_view(session, workspace, {"blocks": [{**block, "choices": {"status": [str(uuid.uuid4())]}}]}, main.id)
+        with pytest.raises(views.FilterError):
+            setup.upsert_view(session, workspace, {"blocks": [{**block, "paint": [{"filter": block["filter"], "tone": "red"}]}]}, main.id)
+        # Подсветка без условий не хранится — она не красила бы ни одной строки.
+        cleared = setup.upsert_view(session, workspace, {"blocks": [{**block, "paint": [{"filter": {"any": []}}]}]}, main.id)
+        assert "paint" not in cleared.blocks[0]
+
+
 def test_vygruzka_bez_vybora_tolko_reestr(space):
     with finance_session() as session:
         workspace = _ws(session, space)

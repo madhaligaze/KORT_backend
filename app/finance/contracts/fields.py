@@ -550,6 +550,37 @@ def _oneoff_columns(with_age: bool) -> list[dict[str, Any]]:
     return columns
 
 
+def oneoff_status_extras(session: Session, workspace_id: uuid.UUID) -> dict[str, Any]:
+    """Статусы «Разовых» — два, как в книге юротдела: «на исполнении» и «исполнен».
+
+    Значения ищутся по смыслу (фаза), а не по написанию: у компании они могут
+    называться по-своему. `choices` — что предлагает выбор, `status` —
+    статус новой строки, `done` — статус, при котором строка подсвечивается.
+    Нет одного из двух — книга остаётся без ограничения и подсветки.
+    """
+    rows = session.scalars(
+        sa.select(ListValue)
+        .where(
+            ListValue.workspace_id == workspace_id,
+            ListValue.field_key == "status",
+            ListValue.archived_at.is_(None),
+        )
+        .order_by(ListValue.position, ListValue.created_at)
+    ).all()
+    first = {}
+    for row in rows:
+        phase = (row.meaning or {}).get("phase")
+        if phase in ("in_progress", "fulfilled") and phase not in first:
+            first[phase] = str(row.id)
+    if len(first) < 2:
+        return {}
+    return {
+        "choices": [first["in_progress"], first["fulfilled"]],
+        "status": first["in_progress"],
+        "done": first["fulfilled"],
+    }
+
+
 def _seed_oneoff(session: Session, workspace: Workspace) -> None:
     """Книга «Разовые»: те же договоры вида «Разовая услуга», свои листы.
 
@@ -572,15 +603,28 @@ def _seed_oneoff(session: Session, workspace: Workspace) -> None:
     oneoff = {"field": "type", "op": "in", "value": [str(value.id)]}
     open_ = {"field": "phase", "op": "not_in", "value": _CLOSED}
     defaults = {"type": str(value.id), "own_side": "executor"}
+    extras = oneoff_status_extras(session, workspace.id)
+    if extras.get("status"):
+        defaults["status"] = extras["status"]
 
     def block(title: str, *conditions: dict[str, Any], with_age: bool = True) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "title": title,
             "filter": {"any": [{"all": [oneoff, *conditions]}]},
             "roles": {},
             "columns": _oneoff_columns(with_age),
             "defaults": dict(defaults),
         }
+        if extras.get("choices"):
+            out["choices"] = {"status": list(extras["choices"])}
+        if extras.get("done"):
+            out["paint"] = [
+                {
+                    "filter": {"any": [{"all": [{"field": "status", "op": "in", "value": [extras["done"]]}]}]},
+                    "tone": "done",
+                }
+            ]
+        return out
 
     def age(op: str, months: int) -> dict[str, Any]:
         return {"field": "age_months", "op": op, "value": months}
@@ -778,6 +822,7 @@ __all__ = [
     "FieldDef",
     "FieldView",
     "BOOKS",
+    "oneoff_status_extras",
     "COMPUTED_FIELDS",
     "DERIVED_FIELDS",
     "LIVE_FIELDS",

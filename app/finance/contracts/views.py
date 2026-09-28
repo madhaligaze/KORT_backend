@@ -24,6 +24,15 @@
 Принадлежность считает только сервер. Клиент предсказывает её на секунду для
 только что сделанной правки, но отдельной реализации правил на клиенте нет —
 две реализации однажды разошлись бы, и лист показывал бы не то, что в правиле.
+
+Подсветка строки
+────────────────
+У блока может быть `paint` — условное форматирование, как в книге юротдела
+BBC «Разовые» (`=TRIM($E2)="исполнен"` красит строку целиком):
+`[{"filter": {"any": [{"all": [{"field": "status", "op": "in", "value": ["<id>"]}]}]}, "tone": "done"}]`.
+Условие — такое же правило, как у листа (и правится той же фразой), и
+считает его тоже только сервер: тон едет в принадлежности договора
+(`{"view", "block", "tone"}`), лист лишь красит строку.
 """
 from __future__ import annotations
 
@@ -176,13 +185,56 @@ def place(view: Any, facts: dict[str, Any]) -> int | None:
     return 0
 
 
+#: Тоны подсветки строки. Один — «сделано»: строку «исполнен» книга
+#: юротдела красила зелёным. Новый тон — только с решением владельца продукта.
+TONES = ("done",)
+
+
+def validate_paint(paint: Any) -> list[dict[str, Any]]:
+    """Подсветка блока: список `{filter: правило, tone}` или отказ словами.
+
+    Подсветка без условий не хранится: она не красила бы ни одной строки.
+    """
+    if paint in (None, [], {}):
+        return []
+    if not isinstance(paint, list):
+        raise FilterError("Подсветка строк записана неверно")
+    out: list[dict[str, Any]] = []
+    for item in paint:
+        if not isinstance(item, dict):
+            raise FilterError("Подсветка строк записана неверно")
+        tone = item.get("tone") or "done"
+        if tone not in TONES:
+            raise FilterError(f"Такого цвета подсветки нет: «{tone}»")
+        rule = validate(item.get("filter"))
+        if is_empty(rule):
+            continue
+        out.append({"filter": rule, "tone": tone})
+    return out
+
+
+def tone_of(block: dict[str, Any] | None, facts: dict[str, Any]) -> str:
+    """Тон строки в блоке: первое подходящее правило подсветки, иначе пусто."""
+    for item in (block or {}).get("paint") or []:
+        if isinstance(item, dict) and matches(item.get("filter"), facts):
+            return str(item.get("tone") or "done")
+    return ""
+
+
 def membership(facts: dict[str, Any], views: Iterable[Any]) -> list[dict[str, Any]]:
-    """В каких листах и блоках стоит договор: `[{"view": key, "block": i}]`."""
+    """В каких листах и блоках стоит договор: `[{"view": key, "block": i}]`.
+
+    `tone` — подсветка строки в этом блоке (`paint`), только если она есть.
+    """
     out: list[dict[str, Any]] = []
     for view in views:
         index = place(view, facts)
         if index is not None:
-            out.append({"view": view.key, "block": index})
+            entry: dict[str, Any] = {"view": view.key, "block": index}
+            tone = tone_of((view.blocks or [])[index] if index < len(view.blocks or []) else None, facts)
+            if tone:
+                entry["tone"] = tone
+            out.append(entry)
     return out
 
 
@@ -195,5 +247,6 @@ def fields_used(rule: dict[str, Any] | None) -> set[str]:
 
 
 __all__ = [
-    "FilterError", "NUMBER_OPS", "OPS", "VIRTUAL_FIELDS", "fields_used", "is_empty", "matches", "membership", "place", "validate",
+    "FilterError", "NUMBER_OPS", "OPS", "TONES", "VIRTUAL_FIELDS", "fields_used", "is_empty", "matches", "membership",
+    "place", "tone_of", "validate", "validate_paint",
 ]
