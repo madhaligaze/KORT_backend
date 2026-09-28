@@ -147,7 +147,9 @@ def schema(session: Session, workspace: Workspace, access: Access) -> dict[str, 
         "economic_roles": list(ECONOMIC_ROLES),
         "status_phases": list(STATUS_PHASES),
         "today": today().isoformat(),
-        "access": {"edit": access.edit, "setup": access.setup},
+        # `payments` — открыты ли «Оплачено/Остаток по выписке» (нужен журнал):
+        # без флага лист спрашивал их у каждого юриста и получал 403 в консоль.
+        "access": {"edit": access.edit, "setup": access.setup, "payments": access.view and "paid" not in access.hidden},
     }
 
 
@@ -429,6 +431,142 @@ def update_field(session: Session, workspace: Workspace, key: str, data: dict[st
     session.flush()
     _schema_changed(session, workspace)
     return item
+
+
+#: Тип поля словами — для журнала («тип: текст → список»). Те же слова, что
+#: у настройки на фронте (`setup/words.ts`).
+TYPE_WORDS = {
+    "text": "текст", "number": "число", "money": "деньги", "date": "дата", "bool": "да или нет",
+    "list": "список", "multi_list": "несколько из списка", "url": "ссылка", "person": "сотрудник",
+    "party": "сторона", "department": "отдел", "choice": "выбор",
+}
+_FIELD_STATE = ("title", "hidden", "required", "type", "fill", "position", "archived")
+
+
+def field_state(session: Session, workspace: Workspace, key: str) -> dict[str, Any]:
+    """Что у поля можно поменять — для журнала «было → стало». Нет поля — пусто."""
+    item = session.scalar(
+        sa.select(EntityField).where(
+            EntityField.workspace_id == workspace.id, EntityField.entity == ENTITY, EntityField.key == key
+        )
+    )
+    if item is None:
+        return {}
+    return {
+        "key": item.key,
+        "title": item.title,
+        "hidden": bool(item.hidden),
+        "required": bool(item.required),
+        "type": item.type,
+        "fill": item.fill or "",
+        "position": item.position,
+        "archived": item.archived_at is not None,
+    }
+
+
+def field_change(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Запись журнала о правке поля: что сделано словами, что было и что стало.
+
+    В `before`/`after` — только поменявшееся и ключ поля: по ним журнал
+    отвечает «кто спрятал поле и каким оно было», а не одно «поле изменено».
+    """
+    changed = [name for name in _FIELD_STATE if before.get(name) != after.get(name)]
+    title = before.get("title") or after.get("title") or ""
+    words: list[str] = []
+    for name in changed:
+        if name == "hidden":
+            words.append("спрятано" if after["hidden"] else "снова в листе и карточке")
+        elif name == "required":
+            words.append("обязательное" if after["required"] else "необязательное")
+        elif name == "title":
+            words.append(f"переименовано в «{after['title']}»")
+        elif name == "type":
+            words.append(f"тип: {TYPE_WORDS.get(before['type'], before['type'])} → {TYPE_WORDS.get(after['type'], after['type'])}")
+        elif name == "fill":
+            words.append("заполнение: " + ("только из списка" if after["fill"] in ("list", "own") else "список или своё"))
+        elif name == "position":
+            words.append("передвинуто")
+        elif name == "archived":
+            words.append("удалено в корзину" if after["archived"] else "возвращено из корзины")
+    key = after.get("key") or before.get("key")
+    keyed = {"key": key} if key else {}
+    return {
+        "title": f"поле «{title}» — {', '.join(words)}" if words else f"поле «{title}» сохранено без изменений",
+        "before": {**keyed, **{name: before.get(name) for name in changed}},
+        "after": {**keyed, **{name: after.get(name) for name in changed}},
+    }
+
+
+def value_state(session: Session, workspace: Workspace, value_id: uuid.UUID) -> dict[str, Any]:
+    """Значение списка для журнала «было → стало». Нет значения — пусто."""
+    item = session.get(ListValue, value_id)
+    if item is None or item.workspace_id != workspace.id:
+        return {}
+    return {
+        "id": str(item.id),
+        "field": item.field_key,
+        "value": item.value,
+        "meaning": dict(item.meaning or {}),
+        "archived": item.archived_at is not None,
+    }
+
+
+def value_change(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    changed = [name for name in ("value", "meaning", "archived") if before.get(name) != after.get(name)]
+    words: list[str] = []
+    for name in changed:
+        if name == "value":
+            words.append(f"переименовано в «{after['value']}»")
+        elif name == "meaning":
+            words.append("смысл изменён")
+        elif name == "archived":
+            words.append("удалено в корзину" if after["archived"] else "возвращено из корзины")
+    title = before.get("value") or after.get("value") or ""
+    ids = {"id": after.get("id") or before.get("id"), "field": after.get("field") or before.get("field")}
+    return {
+        "title": f"значение «{title}» — {', '.join(words)}" if words else f"значение «{title}» сохранено без изменений",
+        "before": {**ids, **{name: before.get(name) for name in changed}},
+        "after": {**ids, **{name: after.get(name) for name in changed}},
+    }
+
+
+def view_state(session: Session, workspace: Workspace, view_id: uuid.UUID) -> dict[str, Any]:
+    """Лист для журнала: целиком, чтобы по записи его можно было вернуть."""
+    view = session.get(EntityView, view_id)
+    if view is None or view.workspace_id != workspace.id:
+        return {}
+    return {
+        "id": str(view.id),
+        "key": view.key,
+        "title": view.title,
+        "blocks": view.blocks or [],
+        "style": view.style or {},
+        "position": view.position,
+        "archived": view.archived_at is not None,
+    }
+
+
+def view_change(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    changed = [name for name in ("title", "blocks", "style", "position", "archived") if before.get(name) != after.get(name)]
+    words: list[str] = []
+    for name in changed:
+        if name == "title":
+            words.append(f"переименован в «{after['title']}»")
+        elif name == "blocks":
+            words.append("блоки изменены")
+        elif name == "style":
+            words.append("подсветка изменена")
+        elif name == "position":
+            words.append("передвинут")
+        elif name == "archived":
+            words.append("удалён в корзину" if after["archived"] else "возвращён из корзины")
+    title = before.get("title") or after.get("title") or ""
+    ids = {"id": after.get("id") or before.get("id"), "key": after.get("key") or before.get("key")}
+    return {
+        "title": f"лист «{title}» — {', '.join(words)}" if words else f"лист «{title}» сохранён без изменений",
+        "before": {**ids, **{name: before.get(name) for name in changed}},
+        "after": {**ids, **{name: after.get(name) for name in changed}},
+    }
 
 
 # ── Значения списков ─────────────────────────────────────────────────────────

@@ -428,3 +428,38 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
     stale = sorted(set(ALLOWED) - mutating)
     assert not stale, f"в ALLOWED маршруты, которых больше нет: {stale}"
     assert not (walk.covered & set(ALLOWED)), "маршрут и пишет событие, и стоит в ALLOWED — уберите из списка"
+
+
+def test_zhurnal_nastroyki_govorit_chto_bylo_i_chto_stalo(app: FastAPI) -> None:
+    """28.09.2026 владелец случайно спрятал «Планируемый срок завершения», а
+    журнал записал одно «поле изменено» и ключ — ни что сделано, ни как было.
+    Теперь запись говорит словами и хранит «было → стало» того, что поменялось."""
+    owner = client(app)
+    owner.post(
+        f"{BASE}/auth/register",
+        json={"email": "setup@bbc.kz", "password": PASSWORD, "company": "BBC", "full_name": "Ермеков Нурболат"},
+    )
+    owner.get(f"{BASE}/contracts/schema")
+
+    def last(kind: str) -> ActionLog:
+        with finance_session() as session:
+            row = session.scalars(sa.select(ActionLog).where(ActionLog.kind == kind).order_by(ActionLog.at.desc())).first()
+            session.expunge(row)
+            return row
+
+    assert owner.patch(f"{BASE}/contracts/setup/fields/planned_end_at", json={"hidden": True}).status_code == 200
+    hidden = last("contracts.setup.field_update")
+    assert "спрятано" in hidden.title and "Планируемый срок завершения" in hidden.title, hidden.title
+    assert hidden.before == {"key": "planned_end_at", "hidden": False}
+    assert hidden.after == {"key": "planned_end_at", "hidden": True}
+
+    # Вернули — запись тоже говорит, что поле снова видно.
+    assert owner.patch(f"{BASE}/contracts/setup/fields/planned_end_at", json={"hidden": False}).status_code == 200
+    back = last("contracts.setup.field_update")
+    assert "снова в листе и карточке" in back.title, back.title
+
+    status = owner.post(f"{BASE}/contracts/setup/lists/status", json={"value": "На паузе"}).json()["id"]
+    assert owner.patch(f"{BASE}/contracts/setup/values/{status}", json={"value": "Ждёт подписи клиента"}).status_code == 200
+    renamed = last("contracts.setup.value_update")
+    assert renamed.before["value"] == "На паузе" and renamed.after["value"] == "Ждёт подписи клиента", renamed.before
+    assert "переименовано" in renamed.title

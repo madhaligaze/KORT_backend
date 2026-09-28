@@ -2391,17 +2391,34 @@ def history_of(
     )
     if before is not None:
         query = query.where(ActionLog.at < before)
+    entries = list(session.scalars(query))
+    # Автор — именем сотрудника, а не логином: юрист входит по номеру, и в
+    # истории договора стояло «+77477683832 · сумма: …» вместо «Жанель».
+    users = {entry.user_id for entry in entries if entry.user_id is not None}
+    names = (
+        {
+            user_id: name
+            for user_id, name in session.execute(
+                sa.select(Employee.user_id, Employee.full_name).where(
+                    Employee.workspace_id == workspace.id, Employee.user_id.in_(users)
+                )
+            )
+            if name
+        }
+        if users
+        else {}
+    )
     return [
         {
             "id": str(entry.id),
             "at": _plain(entry.at),
-            "actor": entry.actor,
+            "actor": names.get(entry.user_id, entry.actor) if entry.user_id is not None else entry.actor,
             "kind": entry.kind,
             "title": entry.title,
             "before": entry.before or {},
             "after": entry.after or {},
         }
-        for entry in session.scalars(query)
+        for entry in entries
     ]
 
 

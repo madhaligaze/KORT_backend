@@ -420,14 +420,21 @@ class FilterIn(BaseModel):
     filter: dict[str, Any] = Field(default_factory=dict)
 
 
-def _setup_call(member: Member, action, what: str, kind: str):
+def _setup_call(member: Member, action, what: str, kind: str, log: dict[str, Any] | None = None):
     """Настройка реестра — только владелец и администратор; каждая — событие журнала.
 
     Поле, список, лист, юрлицо меняют то, как читается весь реестр, и
     «кто добавил этот лист» должно быть видно так же, как правка договора.
+
+    `log` действие заполняет само, если знает больше общего «поле изменено»:
+    `title` — что именно сделано, `before`/`after` — что было и что стало.
+    До 29.09.2026 журнал писал только ключ поля, и случайное «спрятано» у
+    «Планируемого срока завершения» читалось в нём как «поле изменено» — ни
+    что поменялось, ни как было.
     """
     access = _access(member)
     _require_setup(access)
+    log = log if log is not None else {}
     with finance_session() as session:
         workspace = _workspace(session, member)
         try:
@@ -436,8 +443,9 @@ def _setup_call(member: Member, action, what: str, kind: str):
             _raise(exc)
         history.write(
             session, workspace, kind=f"contracts.setup.{kind}", entity="contract_setup",
-            title=f"настройка реестра: {what}",
-            after=result if isinstance(result, dict) and len(str(result)) < 4000 else {},
+            title=f"настройка реестра: {log.get('title') or what}",
+            before=log.get("before") or {},
+            after=log.get("after") or (result if isinstance(result, dict) and len(str(result)) < 4000 else {}),
         )
         return result
 
@@ -457,7 +465,16 @@ def add_field(body: FieldIn, member: Member = Depends(contract_editor)) -> dict[
 
 @router.patch("/setup/fields/{key}")
 def update_field(key: str, body: FieldIn, member: Member = Depends(contract_editor)) -> dict[str, Any]:
-    return _setup_call(member, lambda s, w, a: {"key": setup.update_field(s, w, key, _data(body)).key}, "поле изменено", "field_update")
+    log: dict[str, Any] = {}
+
+    def action(session, workspace, access):
+        before = setup.field_state(session, workspace, key)
+        item = setup.update_field(session, workspace, key, _data(body))
+        after = setup.field_state(session, workspace, key)
+        log.update(setup.field_change(before, after))
+        return {"key": item.key}
+
+    return _setup_call(member, action, "поле изменено", "field_update", log)
 
 
 @router.post("/setup/lists/{field_key}", status_code=201)
@@ -468,7 +485,15 @@ def add_value(field_key: str, body: ValueIn, member: Member = Depends(contract_e
 
 @router.patch("/setup/values/{value_id}")
 def update_value(value_id: UUID, body: ValueIn, member: Member = Depends(contract_editor)) -> dict[str, Any]:
-    return _setup_call(member, lambda s, w, a: {"id": str(setup.update_value(s, w, value_id, _data(body)).id)}, "значение списка изменено", "value_update")
+    log: dict[str, Any] = {}
+
+    def action(session, workspace, access):
+        before = setup.value_state(session, workspace, value_id)
+        item = setup.update_value(session, workspace, value_id, _data(body))
+        log.update(setup.value_change(before, setup.value_state(session, workspace, value_id)))
+        return {"id": str(item.id)}
+
+    return _setup_call(member, action, "значение списка изменено", "value_update", log)
 
 
 @router.post("/setup/values/merge")
@@ -525,7 +550,19 @@ def add_view(body: ViewIn, member: Member = Depends(contract_editor)) -> dict[st
 
 @router.patch("/setup/views/{view_id}")
 def update_view(view_id: UUID, body: ViewIn, member: Member = Depends(contract_editor)) -> dict[str, Any]:
-    return _setup_call(member, lambda s, w, a: setup.view_out(setup.upsert_view(s, w, _data(body), view_id)), "лист изменён", "view_update")
+    log: dict[str, Any] = {}
+
+    def action(session, workspace, access):
+        before = setup.view_state(session, workspace, view_id)
+        out = setup.view_out(setup.upsert_view(session, workspace, _data(body), view_id))
+        change = setup.view_change(before, setup.view_state(session, workspace, view_id))
+        # Лист целиком — большой; в журнал — только если влезает, иначе одно «что сделано».
+        if len(str(change)) > 12000:
+            change = {"title": change["title"], "before": {"id": str(view_id)}, "after": {"id": str(view_id)}}
+        log.update(change)
+        return out
+
+    return _setup_call(member, action, "лист изменён", "view_update", log)
 
 
 class SummaryIn(BaseModel):
