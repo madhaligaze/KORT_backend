@@ -5,7 +5,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -37,15 +37,43 @@ def _pick_database_url() -> str:
     return settings.database_url
 
 
+def _serialize_sqlite_writes(engine: Engine) -> None:
+    """SQLite: каждая транзакция сразу берёт право записи (`BEGIN IMMEDIATE`).
+
+    Без этого два запроса, открывшие реестр одновременно, засевали его наперегонки
+    и второй получал «database is locked» — 500 на `/contracts` при каждой свежей
+    регистрации на локальном стенде (28.09.2026). Причина — отложенные транзакции:
+    `SAVEPOINT` открывает транзакцию без блокировки, оба запроса читают, а потом
+    оба просят запись. SQLite это взаимная блокировка, и он отказывает сразу, не
+    дожидаясь `timeout`. С `BEGIN IMMEDIATE` второй просто ждёт первого, а потом
+    видит готовый реестр (`ensure_registry`).
+
+    Приём из документации SQLAlchemy («Serializable isolation / Savepoints /
+    Transactional DDL» для pysqlite): свой BEGIN вместо того, что пишет драйвер.
+    На Postgres эта же гонка кончается `IntegrityError`, и её разбирает сам засев.
+    """
+
+    @event.listens_for(engine, "connect")
+    def _no_driver_begin(dbapi_connection, _record) -> None:
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def _begin_immediate(connection) -> None:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def _build_engine(url: str) -> Engine:
     """Create an engine with production-grade pooling for the given URL."""
     if url.startswith("sqlite"):
-        return create_engine(
+        engine = create_engine(
             url,
             future=True,
             pool_pre_ping=True,
-            connect_args={"check_same_thread": False},
+            # Сколько ждать чужую запись, прежде чем сдаться.
+            connect_args={"check_same_thread": False, "timeout": 30},
         )
+        _serialize_sqlite_writes(engine)
+        return engine
     return create_engine(
         url,
         future=True,

@@ -54,16 +54,9 @@ def finance_db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def app(finance_db) -> FastAPI:
-    from app.api.routes.finance import router as finance_router
-    from app.api.routes.finance_contracts import router as contracts_router
-    from app.api.routes.finance_people import router as people_router
-    from app.api.routes.finance_looks import router as looks_router
-    from app.api.routes.finance_trash import router as trash_router
+    from finance_routes import finance_app
 
-    application = FastAPI()
-    for router in (finance_router, contracts_router, people_router, trash_router, looks_router):
-        application.include_router(router, prefix="/api/v1")
-    return application
+    return finance_app()
 
 
 def client(app: FastAPI, ip: str = "10.0.0.7") -> TestClient:
@@ -170,15 +163,16 @@ def test_kazhdyy_marshrut_finansov_obyavlyaet_razdel(app: FastAPI) -> None:
     Правило плана: GET требует «видит», изменение — «правит»; «своё» и
     открытые без входа — только из закрытых списков выше.
     """
-    from fastapi.routing import APIRoute
+    from finance_routes import api_routes
 
     problems: list[str] = []
     seen_self: set[tuple[str, str]] = set()
     seen_public: set[tuple[str, str]] = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith(BASE):
-            continue
-        path = route.path[len(BASE):]
+    routes = [(full, route) for full, route in api_routes() if full.startswith(BASE)]
+    # Пустой обход — не «всё объявлено», а слепой тест (FastAPI 0.141).
+    assert routes, "обход не нашёл ни одного маршрута раздела"
+    for full, route in routes:
+        path = full[len(BASE):]
         for method in route.methods:
             key = (method, path)
             marks = _declarations(route.dependant)

@@ -75,16 +75,9 @@ def finance_db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def app(finance_db) -> FastAPI:
-    from app.api.routes.finance import router as finance_router
-    from app.api.routes.finance_contracts import router as contracts_router
-    from app.api.routes.finance_people import router as people_router
-    from app.api.routes.finance_looks import router as looks_router
-    from app.api.routes.finance_trash import router as trash_router
+    from finance_routes import finance_app
 
-    application = FastAPI()
-    for router in (finance_router, contracts_router, people_router, trash_router, looks_router):
-        application.include_router(router, prefix="/api/v1")
-    return application
+    return finance_app()
 
 
 def client(app: FastAPI, ip: str = "10.0.0.7") -> TestClient:
@@ -168,8 +161,7 @@ def _section(batch: dict, key: str) -> dict:
 
 
 def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
-    from fastapi.routing import APIRoute
-
+    from finance_routes import api_routes
     from test_finance_contracts_import import _registry_file
 
     walk = Walk()
@@ -423,12 +415,14 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
 
     # ── все изменяющие маршруты пройдены или названы с причиной ─────────
     mutating = {
-        (method, route.path[len(BASE):])
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path.startswith(BASE)
+        (method, full[len(BASE):])
+        for full, route in api_routes()
+        if full.startswith(BASE)
         for method in route.methods
         if method in ("POST", "PATCH", "PUT", "DELETE")
     }
+    # Пустой обход — не «всё покрыто», а слепой тест (FastAPI 0.141).
+    assert mutating, "обход не нашёл ни одного изменяющего маршрута"
     missing = sorted(mutating - walk.covered - set(ALLOWED))
     assert not missing, "изменяющие маршруты без проверенного события: " + ", ".join(f"{m} {p}" for m, p in missing)
     stale = sorted(set(ALLOWED) - mutating)
