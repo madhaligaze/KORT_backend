@@ -703,6 +703,24 @@ def auth_password(
         return {"ok": True, "sessions_closed": closed}
 
 
+class EmailIn(BaseModel):
+    email: str
+    #: Текущий пароль — почта это логин, и без пароля её не меняют.
+    password: str
+
+
+@router.post("/auth/email")
+def auth_email(body: EmailIn, member: Member = Depends(current_member)) -> dict[str, Any]:
+    """Сменить свою почту для входа. Сеансы остаются: пароль тот же."""
+    _guard()
+    with finance_session() as session:
+        try:
+            user = auth.set_email(session, member, email=body.email, password=body.password)
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"id": str(user.id), "email": user.email or ""}
+
+
 @router.get("/auth/sessions")
 def auth_sessions(member: Member = Depends(current_member)) -> dict[str, Any]:
     """Свои открытые сессии — чтобы увидеть чужой вход и отозвать его.

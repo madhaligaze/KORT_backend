@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
 from app.finance import auth, service
 from app.finance.auth import AuthError
@@ -201,3 +202,32 @@ def test_smena_parolya_trebuet_starogo(finance_db) -> None:
         auth.set_password(session, member, old="pass-12345", new="new-password-1")
     with finance_session() as session:
         assert auth.login(session, email="owner@example.com", password="new-password-1")
+
+
+def test_svoya_pochta_menyaetsya_s_parolem_i_vkhod_po_novoy(finance_db) -> None:
+    """29.09.2026: «одну почту поставили, и её никак не изменить». Почта — логин:
+    меняется только с паролем, занятая — отказ, после смены вход по новой, по
+    старой — нет; запись сотрудника, названная почтой, получает новую."""
+    from app.finance import people
+    from app.finance.accounts_model import FinanceUser
+    from app.finance.contracts.models import Employee
+
+    register(email="old@bbc.kz")
+    register(email="taken@bbc.kz", company="Другая")
+    with finance_session() as session:
+        member, _token = auth.login(session, email="old@bbc.kz", password="pass-12345")
+        people.ensure_employee(session, member.workspace_id, session.get(FinanceUser, member.user_id))
+        with pytest.raises(AuthError, match="Пароль"):
+            auth.set_email(session, member, email="new@bbc.kz", password="не тот")
+        with pytest.raises(AuthError, match="занята"):
+            auth.set_email(session, member, email=" TAKEN@bbc.kz ", password="pass-12345")
+        with pytest.raises(AuthError):
+            auth.set_email(session, member, email="не почта", password="pass-12345")
+        auth.set_email(session, member, email="New@bbc.kz", password="pass-12345")
+        names = [row.full_name for row in session.scalars(sa.select(Employee).where(Employee.user_id == member.user_id))]
+        assert names == ["New@bbc.kz"], names
+    with finance_session() as session:
+        with pytest.raises(AuthError):
+            auth.login(session, email="old@bbc.kz", password="pass-12345")
+        again, _token = auth.login(session, email="new@bbc.kz", password="pass-12345")
+        assert again.role == "owner"

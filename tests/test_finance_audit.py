@@ -282,6 +282,8 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
     client(app).post(f"{BASE}/auth/login", json={"email": "owner@bbc.kz", "password": PASSWORD})
     walk.call(owner, "POST", "/auth/sessions/end-others")
     walk.call(owner, "POST", "/auth/password", json={"old_password": PASSWORD, "new_password": "new-pass-123"})
+    walk.call(owner, "POST", "/auth/email", json={"email": "boss@bbc.kz", "password": "new-pass-123"})
+    assert owner.post(f"{BASE}/auth/email", json={"email": "owner@bbc.kz", "password": "new-pass-123"}).status_code == 200
     walk.call(owner, "PATCH", "/auth/profile", json={"phone": "+77770001122"})
     leaving = client(app)
     leaving.post(f"{BASE}/auth/login", json={"email": "owner@bbc.kz", "password": "new-pass-123"})

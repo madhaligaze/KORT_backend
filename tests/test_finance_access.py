@@ -126,6 +126,8 @@ SELF = {
     ("POST", "/auth/switch"),
     ("POST", "/auth/companies"),
     ("POST", "/auth/password"),
+    # Своя почта для входа — с паролем (29.09.2026).
+    ("POST", "/auth/email"),
     ("GET", "/auth/sessions"),
     ("DELETE", "/auth/sessions/{session_id}"),
     ("POST", "/auth/sessions/end-others"),

@@ -282,6 +282,7 @@ def _event(
     entity: str = "user",
     entity_id: uuid.UUID | None = None,
     after: dict[str, Any] | None = None,
+    before: dict[str, Any] | None = None,
 ) -> None:
     """Событие входа в журнал действий компании.
 
@@ -298,6 +299,7 @@ def _event(
         entity=entity,
         entity_id=entity_id,
         title=title,
+        before=before,
         after=after,
         actor=actor,
         user_id=user_id,
@@ -1106,6 +1108,57 @@ def set_profile(session: Session, member: Member, *, full_name: str | None = Non
     return user
 
 
+def set_email(session: Session, member: Member, *, email: str, password: str) -> FinanceUser:
+    """Сменить свою почту — логин входа (29.09.2026: «одну почту поставили, и
+    её никак не изменить»).
+
+    Пароль спрашиваем всегда: почта — это логин, и человек у чужого открытого
+    браузера не должен переносить учётку на свой адрес. Сеансы не закрываются:
+    пароль прежний, поменялось только имя для входа.
+
+    Владелец, зарегистрированный без ФИО, заведён сотрудником под своей
+    почтой (`people.ensure_employee`), — такая запись получает новую почту,
+    иначе в списках и истории стояла бы прежняя.
+    """
+    from app.finance.contracts.models import Employee
+    from app.finance import people
+
+    user = session.get(FinanceUser, member.user_id)
+    if user is None:
+        raise AuthError("Учётная запись не найдена")
+    if not verify_password(user.password_hash, password or ""):
+        raise AuthError("Пароль не подошёл")
+    clean = normalize_email(email)
+    if not _EMAIL.match(clean):
+        raise AuthError("Это не похоже на адрес почты")
+    if clean == (user.email_normalized or ""):
+        raise AuthError("Это и есть ваша почта")
+    taken = session.scalar(
+        sa.select(FinanceUser.id).where(FinanceUser.email_normalized == clean, FinanceUser.id != user.id)
+    )
+    if taken is not None:
+        raise AuthError("Эта почта уже занята другой учётной записью")
+    before = user.email or ""
+    user.email, user.email_normalized = email.strip(), clean
+    session.flush()
+    if before:
+        for employee in session.scalars(
+            sa.select(Employee).where(Employee.user_id == user.id, Employee.full_name == before)
+        ):
+            try:
+                people.rename_employee(session, employee, user.email)
+            except people.PeopleError:
+                pass
+    if member.workspace_id is not None:
+        _event(
+            session, member.workspace_id, "auth.email", title=f"почта для входа изменена: {before or '—'} → {user.email}",
+            user_id=member.user_id, session_id=member.session_id, ip=member.ip,
+            user_agent=member.user_agent, actor=user.email, entity_id=member.user_id,
+            before={"email": before}, after={"email": user.email},
+        )
+    return user
+
+
 __all__ = [
     "COOKIE_NAME",
     "INVITE_ROLES",
@@ -1135,6 +1188,7 @@ __all__ = [
     "revoke_session",
     "sessions_of",
     "set_password",
+    "set_email",
     "set_profile",
     "switch_company",
     "verify_password",
