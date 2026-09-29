@@ -39,6 +39,7 @@ from app.finance import history
 from app.finance.accounts_model import FinanceUser
 from app.finance.contracts import views as views_module
 from app.finance.contracts.fields import (
+    CHOICES,
     COMPUTED_FIELDS,
     DERIVED_FIELDS,
     ENTITY,
@@ -1934,6 +1935,9 @@ def _label(registry: Registry, key: str, value: Any) -> str:
             return f"{Decimal(str(value)):,.2f}".replace(",", " ").replace(".00", "")
         if key in DATE_KEYS:
             return date.fromisoformat(str(value)).strftime("%d.%m.%Y")
+        if key in CHOICES:
+            # До 30.09.2026 в журнал уходил ключ: «смысл даты окончания: — → terminated».
+            return dict(CHOICES[key]).get(str(value), str(value))
     except (ValueError, KeyError):
         return str(value)
     text = str(value)

@@ -333,3 +333,15 @@ def test_vstavlennaya_stroka_vstaet_pered_sosedom(app: FastAPI) -> None:
     listed = sorted(owner.get(f"{BASE}/contracts").json()["contracts"], key=lambda item: item["position"])
     assert [item["values"]["number"] for item in listed] == ["ЮО/841", "ЮО/840", "ЮО/842"]
     assert listed[0]["id"] == first and listed[2]["id"] == second
+
+
+def test_istoriya_pishet_vybor_slovami_a_ne_klyuchom(app: FastAPI) -> None:
+    """30.09: в журнал уходило «смысл даты окончания: — → terminated»."""
+    team, _, _, _ = _team(app)
+    owner = team["owner"]
+    contract = _contract(owner, "ЮО/830")
+    response = owner.patch(f"{BASE}/contracts/{contract}", json={"values": {"end_kind": "terminated"}})
+    assert response.status_code == 200, response.text
+    titles = [item["title"] for item in owner.get(f"{BASE}/contracts/{contract}/history").json()["items"]]
+    assert any("— → Расторжение" in title for title in titles), titles
+    assert not any("terminated" in title for title in titles), titles
