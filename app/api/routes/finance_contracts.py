@@ -34,6 +34,8 @@ from app.finance.config import finance_settings
 from app.finance.contracts import amendments as amendments_module
 from app.finance.contracts import export as export_module
 from app.finance.contracts import importer, payments, service, setup
+from app.finance.contracts import restore as restore_module
+from app.finance.contracts import shares as shares_module
 from app.finance.contracts import summary as summary_module
 from app.finance.contracts import sync as sync_module
 from app.finance.contracts.views import FilterError
@@ -186,6 +188,125 @@ def list_summary(force: bool = Query(False), member: Member = Depends(contract_m
             return summary_module.contracts_out(session, workspace, access, force=force)
         except Exception as exc:  # noqa: BLE001
             return _raise(exc)
+
+
+@router.get("/shares")
+def list_shares(member: Member = Depends(contract_member)) -> dict[str, Any]:
+    """Доли людей видимых договоров — только открытые этому человеку (`shares.py`):
+    «По сотрудникам» считает по ним. Объявлен до `/{contract_id}`."""
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        return shares_module.all_visible(session, workspace, access)
+
+
+@router.get("/restore-points")
+def list_restore_points(member: Member = Depends(contract_member)) -> dict[str, Any]:
+    """Точки восстановления листа: свои, у администратора — все."""
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        return restore_module.listing(session, workspace, access, _actor(member))
+
+
+@router.post("/restore-points/{point_id}/restore")
+def restore_point(point_id: UUID, member: Member = Depends(contract_editor)) -> dict[str, Any]:
+    """Вернуть как было до изменения листа — Ctrl+Z листа и «Восстановление» кабинета."""
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        try:
+            return restore_module.restore_point(session, workspace, access, _actor(member), point_id)
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            return _raise(exc)
+
+
+class SheetChangeIn(BaseModel):
+    #: `delete_contracts` / `add_column` / `remove_column` / `rename_column` /
+    #: `rename_block` / `move_column` / `rename_view` / `archive_view` /
+    #: `order_views` / `move_rows` / `values_point` / `created_point`.
+    action: str
+    view: str = ""
+    book: str = ""
+    ids: list[str] = Field(default_factory=list)
+    title: str = ""
+    type: str = "text"
+    block: int = 0
+    key: str = ""
+    label: str = ""
+    keys: list[str | None] = Field(default_factory=list)
+    after: list[str | None] = Field(default_factory=list)
+    before: str | None = None
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/sheet/change")
+def sheet_change(body: SheetChangeIn, member: Member = Depends(contract_editor)) -> dict[str, Any]:
+    """Изменение таблицы, о котором лист предупредил и человек согласился.
+
+    Одной транзакцией: точка «как было», само изменение, событие журнала
+    (`contracts/restore.py`). Колонки и листы — владельцу и администратору,
+    строки и значения — тому, кому открыта правка договоров.
+    """
+    access = _access(member)
+    actor = _actor(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        try:
+            out = _sheet_action(session, workspace, access, actor, body)
+            if body.action in ("values_point", "created_point"):
+                # Точка перед правкой, а не правка: сама правка запишет своё
+                # событие обычным путём, а здесь — что точка поставлена.
+                history.write(
+                    session, workspace, kind="contracts.restore_point", entity="restore_point",
+                    title=f"точка восстановления: {(out.get('point') or {}).get('title') or 'нечего запоминать'}",
+                    after={"point": (out.get("point") or {}).get("id")}, actor=actor.email,
+                )
+            return out
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            return _raise(exc)
+
+
+def _sheet_action(session, workspace, access, actor, body: SheetChangeIn) -> dict[str, Any]:
+    kwargs = {"view": body.view}
+    match body.action:
+        case "delete_contracts":
+            return restore_module.delete_contracts(session, workspace, access, actor, body.ids, view=body.view, book=body.book)
+        case "add_column":
+            return restore_module.add_column(
+                session, workspace, access, actor, view=body.view, title=body.title, type=body.type or "text", after=body.after
+            )
+        case "remove_column":
+            return restore_module.remove_column(session, workspace, access, actor, keys=body.keys, **kwargs)
+        case "rename_column":
+            return restore_module.rename_column(
+                session, workspace, access, actor, block=body.block, key=body.key, label=body.label, **kwargs
+            )
+        case "rename_block":
+            return restore_module.rename_block(session, workspace, access, actor, block=body.block, title=body.title, **kwargs)
+        case "move_column":
+            return restore_module.move_column(session, workspace, access, actor, keys=body.keys, after=body.after, **kwargs)
+        case "rename_view":
+            return restore_module.rename_view(session, workspace, access, actor, title=body.title, **kwargs)
+        case "archive_view":
+            return restore_module.archive_view(session, workspace, access, actor, **kwargs)
+        case "order_views":
+            return restore_module.order_views(
+                session, workspace, access, actor, book=body.book, keys=[key for key in body.keys if key]
+            )
+        case "move_rows":
+            return restore_module.move_rows(
+                session, workspace, access, actor, ids=body.ids, before=body.before, view=body.view, book=body.book
+            )
+        case "values_point":
+            return restore_module.values_point(
+                session, workspace, access, actor, items=body.items, title=body.title, view=body.view, book=body.book
+            )
+        case "created_point":
+            return restore_module.created_point(session, workspace, access, actor, ids=body.ids, view=body.view, book=body.book)
+    raise FinanceError("Такого изменения листа нет")
 
 
 @router.get("/export.xlsx")
@@ -650,6 +771,9 @@ class CreateIn(BaseModel):
     view: str | None = None
     block: int | None = None
     source: str = "app"
+    #: Договор, перед которым встать в порядке реестра: строка, вставленная
+    #: в середину листа, не должна после пересборки уехать в конец.
+    before: UUID | None = None
 
 
 class PatchIn(BaseModel):
@@ -677,6 +801,7 @@ def create_contract(body: CreateIn, member: Member = Depends(contract_editor)):
                 session, workspace, access, _actor(member), body.values,
                 view_key=body.view, block=body.block,
                 source="grid" if body.source == "grid" else "app",
+                before=body.before,
             )
             return service.one(session, workspace, access, contract)
         except Exception as exc:  # noqa: BLE001
@@ -773,13 +898,61 @@ def decide_payment(contract_id: UUID, body: PaymentIn, member: Member = Depends(
 
 @router.get("/{contract_id}/history")
 def contract_history(contract_id: UUID, before: str | None = Query(None), member: Member = Depends(contract_member)):
-    _access(member)
+    access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)
         try:
             cursor = datetime.fromisoformat(before) if before else None
-            return {"items": service.history_of(session, workspace, contract_id, before=cursor)}
+            contract = service.get_contract(session, workspace, contract_id)
+            registry = service.Registry(session, workspace)
+            # Доли — не всем: чужие суммы не должны доезжать через «Историю».
+            hidden = shares_module.hidden_history(session, registry, access, contract)
+            return {"items": service.history_of(session, workspace, contract_id, before=cursor, hide=hidden)}
         except Exception as exc:  # noqa: BLE001
+            return _raise(exc)
+
+
+class SharesIn(BaseModel):
+    #: `amount` — тенге, `percent` — процент от суммы договора.
+    unit: str = "amount"
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.get("/{contract_id}/shares")
+def contract_shares(contract_id: UUID, member: Member = Depends(contract_member)):
+    """Доли исполнителей и отделов — только то, что открыто этому человеку."""
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        try:
+            return shares_module.of_contract(session, workspace, access, contract_id)
+        except Exception as exc:  # noqa: BLE001
+            return _raise(exc)
+
+
+@router.put("/{contract_id}/shares/people")
+def put_people_shares(contract_id: UUID, body: SharesIn, member: Member = Depends(contract_editor)):
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        try:
+            return shares_module.set_people(session, workspace, access, _actor(member), contract_id, body.unit, body.items)
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            return _raise(exc)
+
+
+@router.put("/{contract_id}/shares/departments")
+def put_department_shares(contract_id: UUID, body: SharesIn, member: Member = Depends(contract_editor)):
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        try:
+            return shares_module.set_departments(
+                session, workspace, access, _actor(member), contract_id, body.unit, body.items
+            )
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
             return _raise(exc)
 
 

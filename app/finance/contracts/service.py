@@ -231,6 +231,15 @@ class Access:
     entity_ids: frozenset[uuid.UUID] = frozenset()
     hidden: frozenset[str] = frozenset()
     readonly: frozenset[str] = frozenset()
+    #: Владелец или администратор: видит и правит всё, включая доли.
+    admin: bool = False
+    #: Отдел, которым человек руководит (право «Сотрудники и права» своего
+    #: отдела); `None` — не начальник. Начальник видит доли людей в договорах
+    #: своего отдела (`shares.py`).
+    head_department: uuid.UUID | None = None
+    #: «В договорах включено всё»: правит, все договоры, без ограничения по
+    #: юрлицам. Начальнику с таким правом открыты и доли отделов.
+    full_contracts: bool = False
 
     def can_edit_field(self, key: str) -> bool:
         return self.edit and key not in self.hidden and key not in self.readonly
@@ -248,10 +257,11 @@ def access_of(member: Any) -> Access:
     if rights is None:
         return Access()
     if rights.is_admin:
-        return Access(view=True, edit=True, setup=True)
+        return Access(view=True, edit=True, setup=True, admin=True, full_contracts=True)
     level = rights.level("contracts")
     if level == "none":
         return Access()
+    head = rights.department_id if rights.people_rows == "department" and rights.can("people") else None
     hidden = frozenset(key for key in rights.fields if rights.field_level(key) == "none")
     # «Оплачено/Остаток по выписке» — суммы из журнала операций: кому журнал
     # не открыт, тому и эти поля.
@@ -269,6 +279,8 @@ def access_of(member: Any) -> Access:
         entity_ids=rights.contract_entities,
         hidden=hidden,
         readonly=readonly,
+        head_department=head,
+        full_contracts=level == "edit" and rights.contract_rows == "all" and not rights.contract_entities,
     )
 
 
@@ -1869,9 +1881,34 @@ def _custom_value(registry: Registry, key: str, raw: Any, *, fill: str = "", str
 
 
 def _write_people(session: Session, contract: Contract, people: list[Employee]) -> None:
+    """Ответственные договора по порядку — с их долями.
+
+    Доля принадлежит человеку в договоре, а не строке: правка поля
+    «Ответственное лицо» (дописали третьего, поменяли порядок) переписывает
+    строки заново, и без переноса долей каждая такая правка молча стирала бы
+    распределение, сделанное начальником (`shares.py`). Ушедший из поля
+    уходит вместе со своей долей.
+    """
+    kept = {
+        employee_id: (amount, percent)
+        for employee_id, amount, percent in session.execute(
+            sa.select(ContractPerson.employee_id, ContractPerson.share_amount, ContractPerson.share_percent).where(
+                ContractPerson.contract_id == contract.id
+            )
+        )
+    }
     session.execute(sa.delete(ContractPerson).where(ContractPerson.contract_id == contract.id))
     for index, employee in enumerate(people):
-        session.add(ContractPerson(contract_id=contract.id, employee_id=employee.id, position=index))
+        amount, percent = kept.get(employee.id, (None, None))
+        session.add(
+            ContractPerson(
+                contract_id=contract.id,
+                employee_id=employee.id,
+                position=index,
+                share_amount=amount,
+                share_percent=percent,
+            )
+        )
 
 
 def _label(registry: Registry, key: str, value: Any) -> str:
@@ -1950,6 +1987,30 @@ def _next_position(session: Session, workspace_id: uuid.UUID) -> int:
     return int(top or 0) + POSITION_STEP
 
 
+def _position_before(session: Session, workspace_id: uuid.UUID, before: uuid.UUID | None) -> int:
+    """Место перед договором `before` в порядке реестра; места нет — в конец.
+
+    Строка, вставленная посреди листа и ставшая договором, должна и после
+    пересборки стоять там, где её вставили, а не уезжать в конец блока.
+    """
+    if before is None:
+        return _next_position(session, workspace_id)
+    upper = session.scalar(
+        sa.select(Contract.position).where(Contract.id == before, Contract.workspace_id == workspace_id)
+    )
+    if upper is None:
+        return _next_position(session, workspace_id)
+    lower = session.scalar(
+        sa.select(sa.func.max(Contract.position)).where(
+            Contract.workspace_id == workspace_id, Contract.position < upper
+        )
+    )
+    lower = int(lower) if lower is not None else int(upper) - POSITION_STEP
+    if int(upper) - lower < 2:
+        return _next_position(session, workspace_id)
+    return (lower + int(upper)) // 2
+
+
 def create(
     session: Session,
     workspace: Workspace,
@@ -1960,11 +2021,14 @@ def create(
     view_key: str | None = None,
     block: int | None = None,
     source: str = "app",
+    before: uuid.UUID | None = None,
 ) -> Contract:
     """Завести договор. Подстановки блока ставит сервер.
 
     Пустая строка кармана блока «АРЕНДА» заводит договор уже с видом, предметом,
     начислением и смыслом этого блока — человек печатает только своё.
+    `before` — договор, перед которым встать в порядке реестра (строка,
+    вставленная посреди листа).
     """
     if not access.edit:
         raise PermissionError("Заводить договоры вам не открыто")
@@ -1972,7 +2036,7 @@ def create(
     contract = Contract(
         workspace_id=workspace.id,
         source=source,
-        position=_next_position(session, workspace.id),
+        position=_position_before(session, workspace.id, before),
         created_by=actor.user_id,
         created_at=_now(),
         attrs={},
@@ -2377,9 +2441,19 @@ def acknowledge(
 
 
 def history_of(
-    session: Session, workspace: Workspace, contract_id: uuid.UUID, *, limit: int = 50, before: datetime | None = None
+    session: Session,
+    workspace: Workspace,
+    contract_id: uuid.UUID,
+    *,
+    limit: int = 50,
+    before: datetime | None = None,
+    hide: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
-    """История договора: кто, когда, что было и что стало."""
+    """История договора: кто, когда, что было и что стало.
+
+    `hide` — виды событий, которых этому человеку не показывать: доли
+    исполнителей видят не все, а запись о них несёт суммы (`shares.py`).
+    """
     from app.finance.models import ActionLog
 
     get_contract(session, workspace, contract_id)
@@ -2389,6 +2463,9 @@ def history_of(
         .order_by(ActionLog.at.desc())
         .limit(min(max(limit, 1), 200))
     )
+    hidden = list(hide)
+    if hidden:
+        query = query.where(ActionLog.kind.not_in(hidden))
     if before is not None:
         query = query.where(ActionLog.at < before)
     entries = list(session.scalars(query))

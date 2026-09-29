@@ -355,6 +355,15 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
         "source": "проверка", "apply": True,
         "rows": [{"number": "ЮО/141", "customer": "ТОО Альфа", "values": {"Примечания": "из книги"}}],
     })
+    # Доли исполнителей и отделов, изменение листа и возврат по точке (29.09.2026).
+    owner.patch(f"{BASE}/contracts/{first}", json={"values": {"people": "Сейтова Айдана"}})
+    walk.call(owner, "PUT", "/contracts/{contract_id}/shares/people", contract_id=first,
+              json={"unit": "percent", "items": [{"employee_id": person["id"], "value": "100"}]})
+    walk.call(owner, "PUT", "/contracts/{contract_id}/shares/departments", contract_id=first,
+              json={"unit": "percent", "items": [{"department_id": department, "value": "100"}]})
+    moved = walk.call(owner, "POST", "/contracts/sheet/change",
+                      json={"action": "move_rows", "ids": [with_text], "before": first, "view": "main"}).json()
+    walk.call(owner, "POST", "/contracts/restore-points/{point_id}/restore", point_id=moved["point"]["id"])
     walk.call(owner, "DELETE", "/contracts/{contract_id}", contract_id=twin)
     # Корзина: удалённый договор вернуть, снова удалить и стереть насовсем.
     listed = owner.get(f"{BASE}/trash")

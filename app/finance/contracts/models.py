@@ -435,7 +435,13 @@ class Contract(FinanceBase):
 
 
 class ContractPerson(FinanceBase):
-    """Ответственный по договору. Их бывает несколько: «Елжас, Тимур»."""
+    """Ответственный по договору. Их бывает несколько: «Елжас, Тимур».
+
+    Доля — суммой или процентом, одно из двух, как её ввели (`shares.py`):
+    процент следует за суммой договора, сумма — нет. Пусто — доля не задана.
+    Долю видят только сам человек, начальник его отдела, администратор и
+    владелец, поэтому в ответ реестра она не входит — только своим запросом.
+    """
 
     __tablename__ = "contract_people"
 
@@ -445,6 +451,30 @@ class ContractPerson(FinanceBase):
     employee_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid, sa.ForeignKey("employees.id", ondelete="CASCADE"), primary_key=True, index=True
     )
+    position: Mapped[int] = mapped_column(sa.Integer, server_default=sa.text("0"))
+    share_amount: Mapped[Decimal | None] = mapped_column(MONEY)
+    share_percent: Mapped[Decimal | None] = mapped_column(sa.Numeric(9, 4))
+
+
+class ContractDepartment(FinanceBase):
+    """Отдел, работающий над договором вместе с другими, и его доля.
+
+    Отдел договора (`Contract.department_id`, колонка «Отдел») остаётся одним:
+    по нему стоят листы, права и отборы. Здесь — разделение работы между
+    отделами, которые в остальном друг с другом не связаны. Видят его
+    администратор, владелец и начальник отдела с полным правом на договоры.
+    """
+
+    __tablename__ = "contract_departments"
+
+    contract_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("contracts.id", ondelete="CASCADE"), primary_key=True
+    )
+    department_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("departments.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    share_amount: Mapped[Decimal | None] = mapped_column(MONEY)
+    share_percent: Mapped[Decimal | None] = mapped_column(sa.Numeric(9, 4))
     position: Mapped[int] = mapped_column(sa.Integer, server_default=sa.text("0"))
 
 
@@ -551,6 +581,50 @@ class SummarySource(FinanceBase):
     )
 
 
+RESTORE_KINDS = (
+    "contracts_delete", "contracts_create", "values", "view", "field_add", "order",
+)
+
+
+class RestorePoint(FinanceBase):
+    """Что было до изменения листа, которое лист назвал ломающим.
+
+    Удаление договоров, новая колонка, переименованная шапка, убранный лист,
+    массовая вставка — перед каждым лист спрашивает, а сервер запоминает, как
+    было: вернуть можно Ctrl+Z или из кабинета («Восстановление»). Хранится
+    только задетое изменением (`payload`), а не снимок таблицы целиком:
+    вернуть свою правку не должно значить стереть правки коллег, сделанные
+    после неё (`restore.py`).
+    """
+
+    __tablename__ = "restore_points"
+    __table_args__ = (
+        sa.CheckConstraint(_in("kind", RESTORE_KINDS), name="restore_point_kind"),
+        sa.Index("ix_restore_points_workspace_created", "workspace_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=_uuid)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("workspaces.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(sa.Text)
+    #: Что сделано словами: «удалено 3 договора из листа «Сводная»».
+    title: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
+    book: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
+    view_key: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
+    payload: Mapped[dict] = mapped_column(JSONB, server_default=sa.text("'{}'"))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    restored_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    restored_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
 class Counter(FinanceBase):
     """Счётчик компании: номер изменения реестра (`seq`).
 
@@ -579,10 +653,13 @@ __all__ = [
     "CONTRACT_SOURCES",
     "Contract",
     "ContractAmendment",
+    "ContractDepartment",
     "ContractImport",
     "ContractPayment",
     "ContractPerson",
     "Counter",
+    "RESTORE_KINDS",
+    "RestorePoint",
     "CounterpartyName",
     "Department",
     "ECONOMIC_ROLES",
