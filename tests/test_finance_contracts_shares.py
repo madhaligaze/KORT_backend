@@ -191,6 +191,63 @@ def test_svodka_dolej_otdaet_tolko_otkrytoe(app: FastAPI) -> None:
     assert team["other"].get(f"{BASE}/contracts/shares").json()["contracts"] == {}
 
 
+def test_sovmestnyy_dogovor_bez_summ_v_otbore_s_dolyami(app: FastAPI) -> None:
+    """30.09: на проде долей не ввели ни в одном договоре, и «С долями» у
+    владельца был пуст, хотя совместных договоров шесть. Совместный — в
+    ответе и без сумм; каждому — в своих пределах."""
+    team, ids, _yuo, _no = _team(app)
+    owner = team["owner"]
+    together = _contract(owner, "ЮО/720", people="Юристов Рысбек, Юристов Тимур")
+    alone = _contract(owner, "ЮО/721", people="Юристов Тимур")
+    everything = owner.get(f"{BASE}/contracts/shares").json()["contracts"]
+    assert everything == {together: {"scope": "all", "people": {}}}
+    head = team["head"].get(f"{BASE}/contracts/shares").json()["contracts"]
+    assert head == {together: {"scope": "all", "people": {}}}
+    # Исполнитель — свой договор, чужих сумм нет; посторонний — ничего.
+    first = team["first"].get(f"{BASE}/contracts/shares").json()["contracts"]
+    assert first == {together: {"scope": "own", "people": {}}}
+    assert team["other"].get(f"{BASE}/contracts/shares").json()["contracts"] == {}
+    # Доля у одного — у второго исполнителя по-прежнему только своя.
+    _put(owner, together, "amount", [(ids["first"], "400000")])
+    second = team["second"].get(f"{BASE}/contracts/shares").json()["contracts"]
+    assert second == {together: {"scope": "own", "people": {}}}
+    first = team["first"].get(f"{BASE}/contracts/shares").json()["contracts"]
+    assert list(first[together]["people"]) == [ids["first"]]
+    assert alone not in owner.get(f"{BASE}/contracts/shares").json()["contracts"]
+
+
+def test_doli_v_vygruzke_excel_po_pravam(app: FastAPI) -> None:
+    """30.09: в скачанном .xlsx колонки «Доли исполнителей» не было вовсе.
+    Теперь — последней, как в листе, и видно в ней то же, что на экране."""
+    import io
+
+    from openpyxl import load_workbook
+
+    team, ids, _yuo, _no = _team(app)
+    owner = team["owner"]
+    split = _contract(owner, "ЮО/730", people="Юристов Рысбек, Юристов Тимур")
+    _contract(owner, "ЮО/731", people="Юристов Рысбек, Юристов Тимур")
+    _put(owner, split, "amount", [(ids["first"], "500000"), (ids["second"], "150000")])
+
+    def column(who: TestClient) -> dict[str, str | None]:
+        response = who.get(f"{BASE}/contracts/export.xlsx")
+        assert response.status_code == 200, response.text
+        sheet = load_workbook(io.BytesIO(response.content)).worksheets[0]
+        rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
+        head = rows[0]
+        assert head[-1] == "Доли исполнителей"
+        number = head.index("№ Договора")
+        return {str(row[number]): row[-1] for row in rows[1:]}
+
+    everything = column(owner)
+    assert everything["ЮО/730"] == "Юристов Рысбек 500 000 (71,4%) · Юристов Тимур 150 000 (21,4%) · не распределено 50 000"
+    assert everything["ЮО/731"] == "Юристов Рысбек · Юристов Тимур — доли не указаны"
+    first = column(team["first"])
+    assert first["ЮО/730"] == "Ваша доля 500 000 (71,4%)" and first["ЮО/731"] == "Ваша доля не указана"
+    assert "150 000" not in str(first)
+    assert team["other"].get(f"{BASE}/contracts/export.xlsx").status_code == 200
+
+
 def test_doli_otdelov_tolko_nachalniku_s_polnym_pravom(app: FastAPI) -> None:
     team, ids, yuo, no = _team(app)
     owner = team["owner"]

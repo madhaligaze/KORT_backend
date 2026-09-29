@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.finance import history
 from app.finance.contracts import payments as payments_module
+from app.finance.contracts import shares as shares_module
 from app.finance.contracts import views as views_module
 from app.finance.contracts.fields import CHOICES, LIVE_FIELDS, with_live_columns
 from app.finance.contracts.models import Contract, EntityView
@@ -70,12 +71,17 @@ DATE_KEYS = ("signed_at", "planned_end_at", "end_date")
 MONEY_KEYS = (
     "amount", "paid_snapshot", "remaining_snapshot", "summary_paid", "summary_remaining", *LIVE_FIELDS,
 )
+#: «Доли исполнителей» — последней колонкой каждого блока, как в листе
+#: (`sheet-adapter.ts`). В реестре такого поля нет: доли живут в договоре
+#: по людям, и видны — как на экране — только открытые этому человеку.
+SHARES_KEY = "__shares"
+SHARES_LABEL = "Доли исполнителей"
 #: Ширина колонки без ширины из файла — по смыслу; по содержимому она
 #: вырастет до потолка, но не сузится.
-KIND_WIDTH = {"index": 6.0, "date": 12.0, "money": 14.0, "link": 18.0, "text": 16.0}
+KIND_WIDTH = {"index": 6.0, "date": 12.0, "money": 14.0, "link": 18.0, "text": 16.0, "shares": 30.0}
 KEY_WIDTH = {"customer": 30.0, "executor": 18.0, "subject": 26.0, "number": 16.0, "people": 18.0}
 #: Потолок ширины «по содержимому»: дальше текст обрезается краем ячейки.
-WIDTH_CAP = {"index": 8.0, "date": 12.0, "money": 18.0, "link": 22.0, "text": 42.0}
+WIDTH_CAP = {"index": 8.0, "date": 12.0, "money": 18.0, "link": 22.0, "text": 42.0, "shares": 60.0}
 _LINK = re.compile(r"^https?://\S+$")
 
 
@@ -186,6 +192,9 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
             )
             if summary is not None:
                 live[item.id] = summary
+    # Доли — тем же ответом, что у экрана: владельцу и администратору — все,
+    # начальнику — договоров отдела, сотруднику — только своя.
+    shares = shares_module.all_visible(session, workspace, access)["contracts"]
 
     # Без выбора — листы реестра; «Разовые» выгружаются своей кнопкой.
     views: list[EntityView] = [
@@ -202,8 +211,13 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
         # «Оплачено/Остаток по выписке» — там же, где на экране: за колонками
         # оплат из файла (`with_live_columns`).
         layouts = [
-            [column for column in with_live_columns(list(block.get("columns") or [])) if column.get("key") not in hidden]
-            or _default_columns(registry, hidden)
+            [
+                *(
+                    [column for column in with_live_columns(list(block.get("columns") or [])) if column.get("key") not in hidden]
+                    or _default_columns(registry, hidden)
+                ),
+                {"key": SHARES_KEY, "label": SHARES_LABEL},
+            ]
             for block in blocks
         ]
         # Договор — в одном блоке листа: в первом подходящем (`views.place`).
@@ -226,6 +240,8 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
                         row.append(position)
                     elif key in LIVE_FIELDS:
                         row.append(_number(live.get(item.id, {}).get(key)))
+                    elif key == SHARES_KEY:
+                        row.append(_shares_text(shares.get(str(item.id)), mine, registry, item.amount))
                     else:
                         row.append(_text(registry, item, key, mine))
                 rows.append(row)
@@ -323,10 +339,65 @@ def _sheet_title(title: str, taken: list[str]) -> str:
     return candidate
 
 
+def _shares_text(
+    entry: dict[str, Any] | None, listed: Sequence[uuid.UUID], registry: Registry, total: Decimal | None
+) -> str | None:
+    """Доли строкой ячейки — как в листе: «Елжас 500 000 (71,4%) · Рысбек
+    200 000 (28,6%)», в конце — что не распределено; сотруднику — «Ваша доля
+    …»; совместный договор без сумм — «Елжас · Рысбек — доли не указаны»."""
+    if entry is None:
+        return None
+    people: dict[str, dict[str, str | None]] = entry.get("people") or {}
+
+    def name(employee: str) -> str:
+        try:
+            found = registry.employees.get(uuid.UUID(employee))
+        except ValueError:
+            found = None
+        return found.full_name if found else "—"
+
+    def one(share: dict[str, str | None] | None) -> str:
+        amount = _number((share or {}).get("amount"))
+        percent = _number((share or {}).get("percent"))
+        pct = f"{percent:.1f}".rstrip("0").rstrip(".").replace(".", ",") + "%" if percent is not None else ""
+        if amount is not None:
+            return f"{_grouped(amount)} ({pct})" if pct else _grouped(amount)
+        return pct or "—"
+
+    order = [str(item) for item in listed]
+    if not people:
+        if entry.get("scope") == "own":
+            return "Ваша доля не указана"
+        return f"{' · '.join(name(item) for item in order)} — доли не указаны" if order else None
+    if entry.get("scope") == "own":
+        return f"Ваша доля {one(next(iter(people.values())))}"
+    ids = [*order, *(item for item in people if item not in order)]
+    parts = [f"{name(item)} {one(people.get(item)) if item in people else '—'}" for item in ids]
+    amounts = [_number(share.get("amount")) for share in people.values()]
+    percents = [_number(share.get("percent")) for share in people.values()]
+    if total is not None and all(value is not None for value in amounts):
+        rest = float(total) - sum(value or 0.0 for value in amounts)
+        if rest > 0.5:
+            parts.append(f"не распределено {_grouped(round(rest, 2))}")
+    elif all(value is not None for value in percents):
+        rest = 100 - sum(value or 0.0 for value in percents)
+        if rest > 0.01:
+            parts.append(f"не распределено {f'{rest:.1f}'.rstrip('0').rstrip('.').replace('.', ',')}%")
+    return " · ".join(parts)
+
+
+def _grouped(value: float) -> str:
+    """500000 → «500 000», 1234,5 → «1 234,5» — как в листе."""
+    text = f"{value:,.2f}".rstrip("0").rstrip(".")
+    return text.replace(",", " ").replace(".", ",")
+
+
 def _kind(registry: Registry, key: str) -> str:
     """Смысл колонки для оформления: номер строки, дата, сумма, ссылка, текст."""
     if key == ROW_NUMBER:
         return "index"
+    if key == SHARES_KEY:
+        return "shares"
     if key in DATE_KEYS:
         return "date"
     if key in MONEY_KEYS:

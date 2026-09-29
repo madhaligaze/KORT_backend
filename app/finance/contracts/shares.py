@@ -379,35 +379,39 @@ def _out(
 
 
 def all_visible(session: Session, workspace: Workspace, access: Access) -> dict[str, Any]:
-    """Доли всех видимых договоров — для «По сотрудникам»: чья доля открыта, та и считается.
+    """Доли всех видимых договоров — для «По сотрудникам», листа и отбора «С долями».
 
-    Только договоры, где у кого-то задана доля. У каждого — доли, открытые
-    этому человеку: всем — свои, начальнику — договоров его отдела,
-    администратору — все.
+    Договоры, где у кого-то задана доля, и совместные — двое исполнителей и
+    больше, даже пока доли не разнесены (`people` тогда пустой). До 30.09.2026
+    совместные без сумм сюда не попадали, и «С долями» у владельца был пуст:
+    на проде долей не ввели ещё ни в одном договоре, а совместных — шесть.
+
+    У каждого — доли, открытые этому человеку: сотруднику — своя и только в
+    его договорах, начальнику — договоров его отдела, администратору — все.
     """
     registry = Registry(session, workspace)
     rows = session.execute(
         sa.select(ContractPerson.contract_id, ContractPerson.employee_id, ContractPerson.share_amount, ContractPerson.share_percent)
         .join(Contract, Contract.id == ContractPerson.contract_id)
-        .where(
-            Contract.workspace_id == workspace.id,
-            Contract.deleted_at.is_(None),
-            sa.or_(ContractPerson.share_amount.is_not(None), ContractPerson.share_percent.is_not(None)),
-        )
+        .where(Contract.workspace_id == workspace.id, Contract.deleted_at.is_(None))
     ).all()
+    everyone: dict[uuid.UUID, int] = {}
     by_contract: dict[uuid.UUID, list[tuple[uuid.UUID, Decimal | None, Decimal | None]]] = {}
     for contract_id, employee_id, amount, percent in rows:
-        by_contract.setdefault(contract_id, []).append((employee_id, amount, percent))
-    if not by_contract:
+        everyone[contract_id] = everyone.get(contract_id, 0) + 1
+        if amount is not None or percent is not None:
+            by_contract.setdefault(contract_id, []).append((employee_id, amount, percent))
+    together = {contract_id for contract_id, count in everyone.items() if count > 1}
+    ids = list(set(by_contract) | together)
+    if not ids:
         return {"contracts": {}}
-    ids = list(by_contract)
     contracts = {
         item.id: item for item in session.scalars(sa.select(Contract).where(Contract.id.in_(ids)))
     }
     people = people_of(session, ids)
     co = co_departments(session, ids)
     out: dict[str, Any] = {}
-    for contract_id, shares in by_contract.items():
+    for contract_id in ids:
         contract = contracts.get(contract_id)
         if contract is None:
             continue
@@ -418,12 +422,15 @@ def all_visible(session: Session, workspace: Workspace, access: Access) -> dict[
         if scope == "none":
             continue
         entry: dict[str, Any] = {}
-        for employee_id, amount, percent in shares:
+        for employee_id, amount, percent in by_contract.get(contract_id, []):
             if scope == "own" and employee_id != access.employee_id:
                 continue
             value, share, _entered = _pair(contract.amount, amount, percent)
             entry[str(employee_id)] = {"amount": _money_text(value), "percent": _percent_text(share)}
-        if entry:
+        # Совместный договор — в ответе и без сумм; одиночный — только с
+        # заданной долей. Сотруднику со `own` сюда попадают лишь договоры,
+        # где он сам исполнитель (`people_scope`).
+        if entry or contract_id in together:
             out[str(contract_id)] = {"scope": scope, "people": entry}
     return {"contracts": out}
 
