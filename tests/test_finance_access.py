@@ -520,7 +520,8 @@ def test_zavedyonnyy_dogovor_ostayotsya_v_svoey_oblasti(app: FastAPI) -> None:
     own_card = employee(owner, "Ответственный Один", "+77021110001")
     grant(owner, "employee", own_card["id"], {"contracts": {"level": "edit", "scope": {"rows": "own"}}})
     dept_card = employee(owner, "Отделов Два", "+77021110002", yuo)
-    grant(owner, "employee", dept_card["id"], {"contracts": {"level": "edit", "scope": {"rows": "department"}}})
+    # Отдел — потолок: область «своего отдела» задаётся отделу, человек её наследует.
+    grant(owner, "department", yuo, {"contracts": {"level": "edit", "scope": {"rows": "department"}}})
 
     for phone, key, expected in (
         ("+77021110001", "people", [own_card["id"]]),
@@ -836,6 +837,59 @@ def test_ne_admin_razdayot_ne_vyshe_svoego(app: FastAPI) -> None:
     assert same.status_code == 200, same.text
 
 
+# ── Отдел — потолок (29.09.2026) ───────────────────────────────────────────
+
+
+def test_otdel_potolok_lichnoe_tolko_suzhaet(app: FastAPI) -> None:
+    owner = register(app)
+    yuo = department(owner, "ЮО")
+    card = employee(owner, "Потолкова Айжан", "+77061110001", yuo)
+    grant(owner, "department", yuo, {"contracts": {"level": "view", "scope": {"rows": "department"}}})
+
+    # Выше отдела — урезается до отдела: и уровень, и область договоров.
+    wide = grant(owner, "employee", card["id"], {
+        "journal": "view",
+        "contracts": {"level": "edit", "scope": {"rows": "all"}},
+    })
+    assert wide["effective"]["journal"] == "none"
+    assert wide["effective"]["contracts"] == "view"
+    assert wide["contracts_scope"]["rows"] == "department"
+    person = activate(app, "+77061110001")
+    assert person.get(f"{BASE}/operations").status_code == 403
+
+    # Уже отдела — действует: сужать можно.
+    narrow = grant(owner, "employee", card["id"], {"contracts": {"level": "view", "scope": {"rows": "own"}}})
+    assert narrow["effective"]["contracts"] == "view" and narrow["contracts_scope"]["rows"] == "own"
+
+    # Шире отдела — только пометкой администратора, только этому человеку.
+    beyond = grant(owner, "employee", card["id"], {"journal": {"level": "view", "scope": {"beyond": True}}})
+    assert beyond["effective"]["journal"] == "view"
+    assert beyond["grants"]["journal"]["scope"] == {"beyond": True}
+    assert person.get(f"{BASE}/operations").status_code == 200
+    # Отделу пометка не бывает.
+    dept_beyond = owner.put(
+        f"{BASE}/access/department/{yuo}", json={"changes": {"journal": {"level": "view", "scope": {"beyond": True}}}}
+    )
+    assert dept_beyond.status_code == 400
+    # Правка без пометки снимает её — снова под потолком.
+    again = grant(owner, "employee", card["id"], {"journal": "view"})
+    assert again["effective"]["journal"] == "none" and "scope" not in again["grants"]["journal"]
+
+
+def test_bez_otdela_lichnoe_kak_zapisano_nachalnik_ne_shire(app: FastAPI) -> None:
+    owner, yuo, no, head, lawyer, other, boss = _head_setup(app)
+    loose = employee(owner, "Безотделова Мира", "+77061110002")
+    assert grant(owner, "employee", loose["id"], {"journal": "view"})["effective"]["journal"] == "view"
+    # Роль начальника потолком отдела не режется: у ЮО «Сотрудников» нет.
+    assert boss.get(f"{BASE}/people").status_code == 200
+    # Начальник пометку «шире отдела» не ставит.
+    refused = boss.put(
+        f"{BASE}/access/employee/{lawyer['id']}",
+        json={"changes": {"contracts": {"level": "view", "scope": {"rows": "own", "beyond": True}}}},
+    )
+    assert refused.status_code == 400 and "администратор" in refused.json()["detail"]
+
+
 # ── Журнал действий ─────────────────────────────────────────────────────────
 
 
@@ -903,7 +957,8 @@ def test_resolve_na_opros_stoit_edinits_zaprosov(app: FastAPI, finance_db) -> No
     yuo = department(owner, "ЮО")
     card = employee(owner, "Ким Алия", "+77072223355", yuo)
     grant(owner, "department", yuo, {"journal": "view", "contracts": "view"})
-    grant(owner, "employee", card["id"], {"reports.debts": "view"})
+    # Шире отдела — пометкой администратора: без неё потолок отдела срезал бы.
+    grant(owner, "employee", card["id"], {"reports.debts": {"level": "view", "scope": {"beyond": True}}})
     person = activate(app, "+77072223355")
 
     statements: list[str] = []

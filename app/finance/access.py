@@ -9,6 +9,13 @@
   **Личное поверх отдельского**: запись человека по разделу перекрывает
   запись отдела целиком, вместе с областью договоров. **Нет записи — нет
   доступа.**
+* **Отдел — потолок** (29.09.2026): у человека из отдела личная запись
+  только сужает — уровень выше отдельского урезается до него, область
+  договоров — до области отдела (`_under_ceiling`). Шире отдела — только
+  явной пометкой администратора «шире отдела» (`scope.beyond`) и только
+  этому человеку. Человек без отдела живёт по личным записям, как раньше.
+  Роль начальника отдела (люди своего отдела) — не право отдела, а особое
+  право человека, и потолком не режется.
 * Исключение — поля договора (`contracts.field.<ключ>`): нет записи — поле
   «как у договоров». Иначе каждое новое поле реестра пряталось бы от всех,
   пока его не откроют, а прятать — исключение («юристу скрыть „Оплачено“»),
@@ -72,6 +79,8 @@ FIELD_PREFIX = "contracts.field."
 ROW_SCOPES = ("all", "department", "own")
 #: Чьих сотрудников человек видит и меняет правом «Сотрудники и права».
 PEOPLE_SCOPES = ("all", "department")
+#: Пометка личной записи «шире отдела» — только администратор, только человеку.
+BEYOND = "beyond"
 
 
 @dataclass(frozen=True)
@@ -288,6 +297,52 @@ def _uuids(raw: Any) -> set[uuid.UUID]:
     return out
 
 
+def _narrow_rows(personal: str, ceiling: str) -> str:
+    rows = personal if personal in _ROW_RANK else "all"
+    top = ceiling if ceiling in _ROW_RANK else "all"
+    return rows if _ROW_RANK[rows] <= _ROW_RANK[top] else top
+
+
+def _under_ceiling(
+    resource: str, level: str, scope: dict, department: Mapping[str, tuple[str, dict]]
+) -> tuple[str, dict]:
+    """Личная запись человека, урезанная правами его отдела."""
+    if scope.get(BEYOND):
+        return level, scope
+    if resource == "people" and scope.get("rows") == "department":
+        # Начальник отдела — особое право человека, а не отдела.
+        return level, scope
+    if resource.startswith(FIELD_PREFIX):
+        # Поле без записи у отдела — «как у договоров» отдела.
+        top = department.get(resource, department.get("contracts", ("none", {})))[0]
+    else:
+        top = department.get(resource, ("none", {}))[0]
+    if rank(level) > rank(top):
+        level = top
+    if resource != "contracts":
+        return level, scope
+    ceiling = department.get("contracts", ("none", {}))[1]
+    rows = _narrow_rows(str(scope.get("rows", "all")), str(ceiling.get("rows", "all")))
+    out: dict[str, Any] = {"rows": rows}
+    # Юрлица: пусто — без ограничения. У отдела ограничено — у человека не
+    # шире: пересечение, а если оно пусто — юрлица отдела.
+    top_entities = set(ceiling.get("entities") or [])
+    own_entities = set(scope.get("entities") or [])
+    if top_entities:
+        both = own_entities & top_entities if own_entities else top_entities
+        out["entities"] = sorted(both or top_entities)
+    elif own_entities:
+        out["entities"] = sorted(own_entities)
+    # Отделы «только просмотр» — не больше, чем у отдела.
+    if rows != "all":
+        allowed = set(ceiling.get("departments") or []) if ceiling.get("rows", "all") != "all" else None
+        extra = set(scope.get("departments") or [])
+        extra = extra if allowed is None else extra & allowed
+        if extra:
+            out["departments"] = sorted(extra)
+    return level, out
+
+
 def compute(
     role: str,
     rows: Iterable[tuple[str | None, str | None, str | None, Any]],
@@ -295,7 +350,11 @@ def compute(
     employee_id: uuid.UUID | None = None,
     department_id: uuid.UUID | None = None,
 ) -> Rights:
-    """Права из строк `(subject_kind, resource, level, scope)`."""
+    """Права из строк `(subject_kind, resource, level, scope)`.
+
+    У человека с отделом личные записи урезаются правами отдела (потолок,
+    `_under_ceiling`); без отдела — как записано.
+    """
     if role in ADMIN_ROLES or not role:
         return Rights(role=role, employee_id=employee_id, department_id=department_id)
     personal: dict[str, tuple[str, dict]] = {}
@@ -305,6 +364,11 @@ def compute(
             continue
         target = personal if kind == "employee" else department
         target[resource] = (level, scope if isinstance(scope, dict) else {})
+    if department_id is not None:
+        personal = {
+            resource: _under_ceiling(resource, level, scope, department)
+            for resource, (level, scope) in personal.items()
+        }
     merged = {**department, **personal}
     levels = {key: value[0] for key, value in merged.items() if not key.startswith(FIELD_PREFIX)}
     fields = {
@@ -609,12 +673,23 @@ def put_grants(
             raise GrantError(f"{resource_title(resource)}: здесь можно только смотреть")
         if kind == "department" and level == "none" and not resource.startswith(FIELD_PREFIX):
             level = None  # у отдела «нет» — это отсутствие записи
+        beyond = bool(isinstance(scope_raw, dict) and scope_raw.get(BEYOND))
+        if isinstance(scope_raw, dict) and BEYOND in scope_raw:
+            scope_raw = {key: value for key, value in scope_raw.items() if key != BEYOND} or (
+                None if resource not in ("contracts", "people") else {}
+            )
         if resource == "contracts":
             scope = clean_scope(session, workspace_id, scope_raw)
         elif resource == "people":
             scope = clean_people_scope(scope_raw)
         else:
             scope = {}
+        if beyond:
+            if kind != "employee":
+                raise GrantError("«Шире отдела» бывает только у человека")
+            if granter is not None and not granter.is_admin:
+                raise GrantError("Шире отдела открывает администратор")
+            scope = {**scope, BEYOND: True}
         if granter is not None:
             check_grant(
                 granter, resource, level, scope if scope_raw is not None else None,
@@ -629,9 +704,10 @@ def put_grants(
                 session.delete(row)
                 done.append((resource, before, None))
             continue
-        if row is not None and scope_raw is None and resource in ("contracts", "people"):
-            # Прислали только уровень — область остаётся прежней.
-            scope = dict(row.scope or {})
+        if row is not None and scope_raw is None and not beyond and resource in ("contracts", "people"):
+            # Прислали только уровень — область остаётся прежней (кроме
+            # пометки «шире отдела»: её снимает каждая правка без неё).
+            scope = {key: value for key, value in (row.scope or {}).items() if key != BEYOND}
         after = {"level": level, **({"scope": scope} if scope else {})}
         if before == after:
             continue
@@ -702,6 +778,7 @@ __all__ = [
     "MONEY_RESOURCES",
     "RESOURCES",
     "RESOURCE_BY_KEY",
+    "BEYOND",
     "PEOPLE_SCOPES",
     "ROW_SCOPES",
     "GrantError",
