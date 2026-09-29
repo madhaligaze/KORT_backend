@@ -351,6 +351,10 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
     pieces = owner.post(f"{BASE}/contracts/{with_text}/amendments/parse").json()["pieces"]
     walk.call(owner, "POST", "/contracts/{contract_id}/amendments/confirm", contract_id=with_text,
               json={"piece": pieces[0]})
+    walk.call(owner, "POST", "/contracts/sync", json={
+        "source": "проверка", "apply": True,
+        "rows": [{"number": "ЮО/141", "customer": "ТОО Альфа", "values": {"Примечания": "из книги"}}],
+    })
     walk.call(owner, "DELETE", "/contracts/{contract_id}", contract_id=twin)
     # Корзина: удалённый договор вернуть, снова удалить и стереть насовсем.
     listed = owner.get(f"{BASE}/trash")

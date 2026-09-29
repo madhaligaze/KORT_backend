@@ -35,6 +35,7 @@ from app.finance.contracts import amendments as amendments_module
 from app.finance.contracts import export as export_module
 from app.finance.contracts import importer, payments, service, setup
 from app.finance.contracts import summary as summary_module
+from app.finance.contracts import sync as sync_module
 from app.finance.contracts.views import FilterError
 from app.finance.db import finance_session
 from app.finance.service import FinanceError
@@ -138,6 +139,39 @@ def list_payments(member: Member = Depends(contract_member)) -> dict[str, Any]:
         try:
             return payments.summaries(session, workspace, access)
         except Exception as exc:  # noqa: BLE001
+            return _raise(exc)
+
+
+class SyncIn(BaseModel):
+    #: Откуда строки — для журнала: «Google: BBC Реестр ЮО - Разовые, лист Разовые».
+    source: str = ""
+    #: Строки: `{"number": "№ЮО/143", "customer": "ТОО …", "values": {"Статус": "Исполнен", …}}`.
+    rows: list[dict[str, Any]]
+    #: `false` (по умолчанию) — пробный прогон: только отчёт.
+    apply: bool = False
+    #: `empty` — заполнять только пустое; `all` — и менять расходящееся.
+    overwrite: str = "empty"
+    #: Заводить договоры, которых в KORT нет.
+    create: bool = True
+
+
+@router.post("/sync")
+def sync_contracts(body: SyncIn, member: Member = Depends(contract_editor)) -> dict[str, Any]:
+    """Сверка реестра с внешним источником (`contracts/sync.py`) — шлюз для скриптов.
+
+    Пробный прогон по умолчанию; с `apply` — правки тем же путём, что карточка,
+    каждая в истории договора. Инструкция — `backend/docs/sync-gateway.md`.
+    """
+    access = _access(member)
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        try:
+            return sync_module.run(
+                session, workspace, access, _actor(member), body.rows,
+                source=body.source.strip()[:200], apply=body.apply, overwrite=body.overwrite, create=body.create,
+            )
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
             return _raise(exc)
 
 
