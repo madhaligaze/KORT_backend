@@ -35,6 +35,19 @@
 юристу ЮО показать договоры НО, не давая их править). Правка такого договора
 — отказ сервера, а не спрятанная кнопка: лист и карточка получают договор с
 `readonly` и сами правку не предлагают.
+
+Начальник отдела
+────────────────
+Право «Сотрудники и права» с областью «своего отдела» (`scope.rows =
+"department"`, 29.09.2026): человек заводит сотрудников только в свой отдел,
+открывает им вход, правит их доступ, блокирует и удаляет — а чужих отделов
+не видит. Отделы, права отдела и чужих людей меняет администратор.
+
+**Не выше своего.** Кто сам не администратор, раздаёт права не выше
+собственных (`check_grant`): уровень раздела и поля — не выше своего,
+договоры — не шире своей области, «Сотрудники и права» начальник не
+раздаёт вовсе. Иначе право «Сотрудники и права» было бы правом «сделай себе
+помощника с любым доступом» — то есть администратором без этого слова.
 """
 from __future__ import annotations
 
@@ -57,6 +70,8 @@ VIEW_ONLY = ("none", "view")
 ADMIN_ROLES = frozenset({"owner", "admin"})
 FIELD_PREFIX = "contracts.field."
 ROW_SCOPES = ("all", "department", "own")
+#: Чьих сотрудников человек видит и меняет правом «Сотрудники и права».
+PEOPLE_SCOPES = ("all", "department")
 
 
 @dataclass(frozen=True)
@@ -176,10 +191,31 @@ class Rights:
     fields: Mapping[str, str] = field(default_factory=lambda: _EMPTY)
     employee_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
+    #: «Сотрудники и права»: `all` — все люди компании, `department` — свой отдел.
+    people_rows: str = "all"
 
     @property
     def is_admin(self) -> bool:
         return self.role in ADMIN_ROLES
+
+    @property
+    def people_department_only(self) -> bool:
+        """Начальник отдела: люди — только своего отдела."""
+        return not self.is_admin and self.people_rows == "department"
+
+    def reaches(self, department_id: uuid.UUID | None) -> bool:
+        """Видит ли человек правом «Сотрудники и права» сотрудника этого отдела."""
+        if self.is_admin:
+            return True
+        if not self.can("people"):
+            return False
+        if self.people_rows != "department":
+            return True
+        return self.department_id is not None and department_id == self.department_id
+
+    def people_scope(self) -> dict[str, Any]:
+        rows = "all" if self.is_admin else self.people_rows
+        return {"rows": rows, "department_id": str(self.department_id) if rows == "department" and self.department_id else None}
 
     def level(self, resource: str) -> str:
         if self.is_admin:
@@ -281,6 +317,8 @@ def compute(
     entities = _uuids(scope.get("entities"))
     # «Все договоры» и так видят каждый отдел — лишние отделы там ничего не значат.
     departments = _uuids(scope.get("departments")) if rows_scope != "all" else set()
+    people_scope = merged.get("people", ("none", {}))[1]
+    people_rows = people_scope.get("rows") if people_scope.get("rows") in PEOPLE_SCOPES else "all"
     return Rights(
         role=role,
         levels=MappingProxyType(levels),
@@ -290,6 +328,7 @@ def compute(
         fields=MappingProxyType(fields),
         employee_id=employee_id,
         department_id=department_id,
+        people_rows=people_rows,
     )
 
 
@@ -398,6 +437,7 @@ def catalog(session: Session, workspace_id: uuid.UUID) -> dict[str, Any]:
             for key, title in field_keys(session, workspace_id)
         ],
         "row_scopes": list(ROW_SCOPES),
+        "people_scopes": list(PEOPLE_SCOPES),
     }
 
 
@@ -459,6 +499,63 @@ def clean_scope(session: Session, workspace_id: uuid.UUID, raw: Any) -> dict[str
     return out
 
 
+def clean_people_scope(raw: Any) -> dict[str, Any]:
+    """Чьих сотрудников: всех (записи нет) или своего отдела."""
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise GrantError("Область сотрудников записана неверно")
+    rows = raw.get("rows", "all")
+    if rows not in PEOPLE_SCOPES:
+        raise GrantError("Чьих сотрудников: всех или своего отдела")
+    return {"rows": rows} if rows != "all" else {}
+
+
+_ROW_RANK = {"own": 0, "department": 1, "all": 2}
+
+
+def check_grant(
+    granter: Rights,
+    resource: str,
+    level: str | None,
+    scope: dict[str, Any] | None,
+    *,
+    subject_department: uuid.UUID | None,
+) -> None:
+    """Не администратор раздаёт права не выше своих — или отказ словами.
+
+    `level is None` — «как у отдела» (личная запись снимается): это решение
+    отдела, его ставил администратор, и оно не шире, чем тот задумал.
+    `scope is None` — прислан только уровень, область остаётся прежней.
+    """
+    if granter.is_admin or level is None or level == "none":
+        return
+    own = granter.level(resource)
+    if rank(level) > rank(own):
+        raise GrantError(
+            f"{resource_title(resource)}: выше ваших прав не открыть — у вас «{LEVEL_TITLES.get(own, own)}»"
+        )
+    if resource == "people" and granter.people_rows != "all":
+        raise GrantError("«Сотрудники и права» другим открывает администратор")
+    if resource != "contracts" or scope is None:
+        return
+    rows = scope.get("rows", "all")
+    if granter.contract_rows != "all":
+        wider = _ROW_RANK.get(rows, 2) > _ROW_RANK.get(granter.contract_rows, 2)
+        other_department = rows == "department" and subject_department != granter.department_id
+        if wider or other_department:
+            raise GrantError("Договоры: шире, чем открыто вам самим, не открыть")
+        allowed = {str(item) for item in granter.contract_departments}
+        if granter.department_id is not None:
+            allowed.add(str(granter.department_id))
+        if not set(scope.get("departments") or []) <= allowed:
+            raise GrantError("Договоры: отделы — только те, что открыты вам самим")
+    if granter.contract_entities:
+        entities = set(scope.get("entities") or [])
+        if not entities or not entities <= {str(item) for item in granter.contract_entities}:
+            raise GrantError("Договоры: юрлица — только из тех, что открыты вам самим")
+
+
 def put_grants(
     session: Session,
     workspace_id: uuid.UUID,
@@ -467,13 +564,22 @@ def put_grants(
     changes: Mapping[str, Any],
     *,
     by: uuid.UUID | None,
+    granter: Rights | None = None,
 ) -> list[tuple[str, dict[str, Any] | None, dict[str, Any] | None]]:
     """Записать права субъекта. Возвращает `(ресурс, было, стало)` по изменённым.
 
     `None` у человека — «как у отдела» (личная запись снимается); у отдела
-    `None` и `none` значат одно: записи нет — доступа нет.
+    `None` и `none` значат одно: записи нет — доступа нет. `granter` — кто
+    раздаёт: не администратор раздаёт не выше своего (`check_grant`).
     """
     fields = {f"{FIELD_PREFIX}{key}" for key, _title in field_keys(session, workspace_id)}
+    if granter is not None and not granter.is_admin and kind == "employee":
+        from app.finance.contracts.models import Employee
+
+        subject = session.get(Employee, subject_id)
+        subject_department = subject.department_id if subject is not None else None
+    else:
+        subject_department = None
     existing = {
         row.resource: row
         for row in session.scalars(
@@ -503,7 +609,17 @@ def put_grants(
             raise GrantError(f"{resource_title(resource)}: здесь можно только смотреть")
         if kind == "department" and level == "none" and not resource.startswith(FIELD_PREFIX):
             level = None  # у отдела «нет» — это отсутствие записи
-        scope = clean_scope(session, workspace_id, scope_raw) if resource == "contracts" else {}
+        if resource == "contracts":
+            scope = clean_scope(session, workspace_id, scope_raw)
+        elif resource == "people":
+            scope = clean_people_scope(scope_raw)
+        else:
+            scope = {}
+        if granter is not None:
+            check_grant(
+                granter, resource, level, scope if scope_raw is not None else None,
+                subject_department=subject_department,
+            )
         row = existing.get(resource)
         before = (
             {"level": row.level, **({"scope": row.scope} if row.scope else {})} if row is not None else None
@@ -513,7 +629,7 @@ def put_grants(
                 session.delete(row)
                 done.append((resource, before, None))
             continue
-        if row is not None and scope_raw is None and resource == "contracts":
+        if row is not None and scope_raw is None and resource in ("contracts", "people"):
             # Прислали только уровень — область остаётся прежней.
             scope = dict(row.scope or {})
         after = {"level": level, **({"scope": scope} if scope else {})}
@@ -586,11 +702,14 @@ __all__ = [
     "MONEY_RESOURCES",
     "RESOURCES",
     "RESOURCE_BY_KEY",
+    "PEOPLE_SCOPES",
     "ROW_SCOPES",
     "GrantError",
     "Resource",
     "Rights",
     "catalog",
+    "check_grant",
+    "clean_people_scope",
     "clean_scope",
     "compute",
     "describe_change",

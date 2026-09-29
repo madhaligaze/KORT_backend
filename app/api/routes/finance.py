@@ -342,7 +342,12 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
     employee_out = None
     if member.workspace_id is not None:
         if rights.can("people", "edit"):
-            pending = notifications.pending_count(session, member.workspace_id)
+            # Начальнику отдела — просьбы только его людей.
+            pending = notifications.pending_count(
+                session,
+                member.workspace_id,
+                department=(rights.department_id,) if rights.people_department_only else None,
+            )
         row = session.execute(
             sa.select(Employee, Department)
             .outerjoin(Department, Department.id == Employee.department_id)
@@ -389,6 +394,7 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
         "role": member.role or None,
         "access": rights.access_map(),
         "contracts_scope": rights.contracts_scope(),
+        "people_scope": rights.people_scope(),
         "pending_requests": pending,
         "employee": employee_out,
         "habits": prefer,

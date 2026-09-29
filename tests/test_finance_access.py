@@ -735,6 +735,107 @@ def test_registraciya_bez_imeni_otkaz(app: FastAPI) -> None:
     assert response.status_code == 400 and "имя" in response.json()["detail"]
 
 
+# ── Начальник отдела (29.09.2026) ───────────────────────────────────────────
+
+
+def _head_setup(app: FastAPI):
+    """Владелец, отделы ЮО и НО, начальник ЮО, юрист ЮО и человек НО."""
+    owner = register(app)
+    yuo, no = department(owner, "ЮО"), department(owner, "НО")
+    head = employee(owner, "Начальникова Жанель", "+77051110001", yuo)
+    lawyer = employee(owner, "Юристов Рысбек", "+77051110002", yuo)
+    other = employee(owner, "Налоговая Дана", "+77051110003", no)
+    grant(owner, "department", yuo, {"contracts": {"level": "edit", "scope": {"rows": "department"}}})
+    grant(owner, "employee", head["id"], {"people": {"level": "edit", "scope": {"rows": "department"}}})
+    return owner, yuo, no, head, lawyer, other, activate(app, "+77051110001")
+
+
+def test_nachalnik_otdela_vidit_i_menyaet_tolko_svoih(app: FastAPI) -> None:
+    owner, yuo, no, head, lawyer, other, boss = _head_setup(app)
+
+    me = boss.get(f"{BASE}/auth/me").json()
+    assert me["people_scope"] == {"rows": "department", "department_id": yuo}
+    listing = boss.get(f"{BASE}/people").json()
+    assert {item["id"] for item in listing["employees"]} == {head["id"], lawyer["id"]}
+    assert [item["id"] for item in listing["departments"]] == [yuo]
+
+    # Чужой отдел — как несуществующий: ни карточки, ни прав, ни сеансов.
+    for path in (f"/people/employees/{other['id']}", f"/access/employee/{other['id']}", f"/access/department/{no}"):
+        assert boss.get(f"{BASE}{path}").status_code == 404, path
+    assert boss.post(f"{BASE}/people/employees/{other['id']}/reset").status_code == 403
+    assert boss.patch(f"{BASE}/people/employees/{other['id']}", json={"job_title": "x"}).status_code == 403
+
+    # Новый сотрудник встаёт в отдел начальника сам; в чужой отдел — отказ.
+    made = boss.post(f"{BASE}/people/employees", json={"full_name": "Новикова Нигора", "phone": "+77051110004"})
+    assert made.status_code == 201, made.text
+    assert made.json()["department_id"] == yuo and made.json()["status"] == "pending"
+    elsewhere = boss.post(
+        f"{BASE}/people/employees", json={"full_name": "Чужая Айгуль", "department_id": no}
+    )
+    assert elsewhere.status_code == 403
+    moved = boss.patch(f"{BASE}/people/employees/{lawyer['id']}", json={"department_id": no})
+    assert moved.status_code == 403
+
+    # Отделы и права отдела — администратору.
+    assert boss.post(f"{BASE}/people/departments", json={"code": "ХЗ"}).status_code == 403
+    assert boss.put(f"{BASE}/access/department/{yuo}", json={"changes": {"journal": "view"}}).status_code == 403
+
+    # Права подчинённого — не выше своих.
+    ok = boss.put(f"{BASE}/access/employee/{lawyer['id']}", json={"changes": {"contracts": "view"}})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["effective"]["contracts"] == "view"
+    higher = boss.put(f"{BASE}/access/employee/{lawyer['id']}", json={"changes": {"journal": "view"}})
+    assert higher.status_code == 400 and "выше ваших прав" in higher.json()["detail"]
+    boss_maker = boss.put(f"{BASE}/access/employee/{lawyer['id']}", json={"changes": {"people": "view"}})
+    assert boss_maker.status_code == 400 and "администратор" in boss_maker.json()["detail"]
+    wider = boss.put(
+        f"{BASE}/access/employee/{lawyer['id']}",
+        json={"changes": {"contracts": {"level": "edit", "scope": {"rows": "all"}}}},
+    )
+    assert wider.status_code == 400 and "шире" in wider.json()["detail"]
+    own = boss.put(
+        f"{BASE}/access/employee/{lawyer['id']}",
+        json={"changes": {"contracts": {"level": "edit", "scope": {"rows": "own"}}}},
+    )
+    assert own.status_code == 200, own.text
+    assert own.json()["contracts_scope"]["rows"] == "own"
+
+    # Себе — нельзя; удалить подчинённого — можно, в корзину.
+    assert boss.put(f"{BASE}/access/employee/{head['id']}", json={"changes": {"journal": "edit"}}).status_code == 403
+    gone = boss.delete(f"{BASE}/people/employees/{lawyer['id']}")
+    assert gone.status_code == 200 and gone.json()["archived"] is True
+
+
+def test_nachalnik_v_pravah_otdela_i_prosby_svoih(app: FastAPI) -> None:
+    owner, yuo, no, head, lawyer, other, boss = _head_setup(app)
+    rights = owner.get(f"{BASE}/access/department/{yuo}").json()
+    assert rights["heads"] == [head["id"]]
+    assert {item["id"] for item in rights["members"]} == {head["id"], lawyer["id"]}
+
+    # Просьба человека НО о сбросе пароля начальнику ЮО не видна.
+    activate(app, "+77051110003", ip="10.0.0.21")
+    assert client(app, "10.0.0.22").post(f"{BASE}/auth/phone/forgot", json={"phone": "+77051110003"}).status_code == 200
+    assert owner.get(f"{BASE}/auth/me").json()["pending_requests"] == 1
+    assert boss.get(f"{BASE}/auth/me").json()["pending_requests"] == 0
+    assert boss.get(f"{BASE}/notifications").json()["pending"] == 0
+    request = owner.get(f"{BASE}/notifications").json()["items"][0]
+    assert boss.post(f"{BASE}/notifications/{request['id']}/resolve").status_code == 404
+
+
+def test_ne_admin_razdayot_ne_vyshe_svoego(app: FastAPI) -> None:
+    owner = register(app)
+    hr = employee(owner, "Кадровикова Айгерим", "+77051110010")
+    staff = employee(owner, "Бухгалтерова Алия", "+77051110011")
+    grant(owner, "employee", hr["id"], {"people": "edit", "contracts": "view"})
+    person = activate(app, "+77051110010")
+    above = person.put(f"{BASE}/access/employee/{staff['id']}", json={"changes": {"journal": "view"}})
+    assert above.status_code == 400 and "выше ваших прав" in above.json()["detail"]
+    above_level = person.put(f"{BASE}/access/employee/{staff['id']}", json={"changes": {"contracts": "edit"}})
+    assert above_level.status_code == 400
+    same = person.put(f"{BASE}/access/employee/{staff['id']}", json={"changes": {"contracts": "view"}})
+    assert same.status_code == 200, same.text
+
+
 # ── Журнал действий ─────────────────────────────────────────────────────────
 
 

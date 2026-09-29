@@ -95,21 +95,42 @@ def last_request_at(session: Session, kind: str, subject_user_id: uuid.UUID) -> 
     )
 
 
-def pending_count(session: Session, workspace_id: uuid.UUID) -> int:
-    """Число открытых просьб к администраторам — «N запросов» в раме."""
-    return int(
-        session.scalar(
-            sa.select(sa.func.count())
-            .select_from(Notification)
-            .where(
-                Notification.workspace_id == workspace_id,
-                Notification.audience == "admins",
-                Notification.kind.in_(ACTIONABLE),
-                Notification.resolved_at.is_(None),
-            )
+def _about_department(workspace_id: uuid.UUID, department: tuple[uuid.UUID | None] | None):
+    """Условие «просьба о человеке этого отдела» — для начальника отдела.
+
+    `department` — кортеж из одного отдела (`(None,)` — отдела нет, и просьб
+    не видно), `None` — отбора нет.
+    """
+    from app.finance.contracts.models import Employee
+
+    if department is None:
+        return None
+    return Notification.subject_user_id.in_(
+        sa.select(Employee.user_id).where(
+            Employee.workspace_id == workspace_id,
+            Employee.department_id == department[0],
+            Employee.user_id.is_not(None),
         )
-        or 0
     )
+
+
+def pending_count(
+    session: Session, workspace_id: uuid.UUID, *, department: tuple[uuid.UUID | None] | None = None
+) -> int:
+    """Число открытых просьб к администраторам — «N запросов» в раме.
+
+    `department` — у начальника отдела только просьбы его людей.
+    """
+    conditions = [
+        Notification.workspace_id == workspace_id,
+        Notification.audience == "admins",
+        Notification.kind.in_(ACTIONABLE),
+        Notification.resolved_at.is_(None),
+    ]
+    about = _about_department(workspace_id, department)
+    if about is not None:
+        conditions.append(about)
+    return int(session.scalar(sa.select(sa.func.count()).select_from(Notification).where(*conditions)) or 0)
 
 
 def open_about(session: Session, workspace_id: uuid.UUID, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[dict[str, Any]]]:
@@ -145,14 +166,20 @@ def listing(
     viewer_id: uuid.UUID,
     include_resolved: bool = False,
     limit: int = 100,
+    department: tuple[uuid.UUID | None] | None = None,
 ) -> dict[str, Any]:
-    """Открытые просьбы, сведения за сутки и адресованное лично смотрящему."""
+    """Открытые просьбы, сведения за сутки и адресованное лично смотрящему.
+
+    `department` — у начальника отдела: просьбы только о людях его отдела.
+    """
     from app.finance.contracts.models import Employee
 
     since = _now() - RECENT
     conditions = [Notification.workspace_id == workspace_id]
+    about = _about_department(workspace_id, department)
+    admins = Notification.audience == "admins"
     audience = sa.or_(
-        Notification.audience == "admins",
+        sa.and_(admins, about) if about is not None else admins,
         sa.and_(Notification.audience == "user", Notification.recipient_id == viewer_id),
     )
     conditions.append(audience)
@@ -207,16 +234,27 @@ def listing(
                 ),
             }
         )
-    return {"items": out, "pending": pending_count(session, workspace_id)}
+    return {"items": out, "pending": pending_count(session, workspace_id, department=department)}
 
 
 class NotFound(LookupError):
     """Уведомления нет в этой компании — ответ тот же, что «нет вовсе»."""
 
 
-def resolve(session: Session, workspace_id: uuid.UUID, notification_id: uuid.UUID, *, by: uuid.UUID) -> Notification:
+def resolve(
+    session: Session,
+    workspace_id: uuid.UUID,
+    notification_id: uuid.UUID,
+    *,
+    by: uuid.UUID,
+    department: tuple[uuid.UUID | None] | None = None,
+) -> Notification:
     item = session.get(Notification, notification_id)
     if item is None or item.workspace_id != workspace_id:
+        raise NotFound("Уведомление не найдено")
+    about = _about_department(workspace_id, department)
+    if about is not None and not session.scalar(sa.select(Notification.id).where(Notification.id == item.id, about)):
+        # Просьба о человеке другого отдела: начальнику её и в списке не видно.
         raise NotFound("Уведомление не найдено")
     if item.resolved_at is None:
         item.resolved_at = _now()

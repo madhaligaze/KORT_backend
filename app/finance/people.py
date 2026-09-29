@@ -208,6 +208,26 @@ def _check_people(member: auth.Member, level: str = "edit") -> None:
         )
 
 
+def _check_reach(member: auth.Member, employee: Employee) -> None:
+    """Начальник отдела меняет только людей своего отдела (`Rights.reaches`)."""
+    if not member.rights.reaches(employee.department_id):
+        raise Forbidden("Сотрудник другого отдела — им управляет администратор")
+
+
+def _check_departments(member: auth.Member) -> None:
+    """Отделы заводит и переименовывает администратор, а не начальник отдела."""
+    _check_people(member)
+    if member.rights.people_department_only:
+        raise Forbidden("Отделы заводит и меняет администратор")
+
+
+def reach_department(member: auth.Member) -> tuple[bool, uuid.UUID | None]:
+    """Чьих людей видит человек: `(только отдел?, какой отдел)`."""
+    if member.rights.people_department_only:
+        return True, member.rights.department_id
+    return False, None
+
+
 def _check_manage(member: auth.Member, target: FinanceMembership | None) -> None:
     """Можно ли этому человеку менять учётку `target`."""
     _check_people(member)
@@ -275,7 +295,14 @@ def department_out(item: Department, count: int = 0) -> dict[str, Any]:
     }
 
 
-def list_departments(session: Session, workspace_id: uuid.UUID, *, include_archived: bool = False) -> list[dict[str, Any]]:
+def list_departments(
+    session: Session,
+    workspace_id: uuid.UUID,
+    *,
+    include_archived: bool = False,
+    only: tuple[bool, uuid.UUID | None] = (False, None),
+) -> list[dict[str, Any]]:
+    """Отделы со счётчиками. `only` — у начальника отдела только свой."""
     counts = dict(
         session.execute(
             sa.select(Employee.department_id, sa.func.count())
@@ -286,6 +313,10 @@ def list_departments(session: Session, workspace_id: uuid.UUID, *, include_archi
     query = sa.select(Department).where(Department.workspace_id == workspace_id)
     if not include_archived:
         query = query.where(Department.archived_at.is_(None))
+    if only[0]:
+        if only[1] is None:
+            return []
+        query = query.where(Department.id == only[1])
     return [
         department_out(item, int(counts.get(item.id, 0)))
         for item in session.scalars(query.order_by(Department.position, Department.code))
@@ -309,7 +340,7 @@ def get_department(session: Session, workspace_id: uuid.UUID, department_id: uui
 
 
 def create_department(session: Session, workspace: Workspace, member: auth.Member, data: dict[str, Any]) -> Department:
-    _check_people(member)
+    _check_departments(member)
     code, key = _clean_code(data.get("code"))
     if session.scalar(
         sa.select(Department.id).where(Department.workspace_id == workspace.id, Department.normalized_name == key)
@@ -336,7 +367,7 @@ def create_department(session: Session, workspace: Workspace, member: auth.Membe
 def update_department(
     session: Session, workspace: Workspace, member: auth.Member, department_id: uuid.UUID, data: dict[str, Any]
 ) -> Department:
-    _check_people(member)
+    _check_departments(member)
     item = get_department(session, workspace.id, department_id)
     before = {"code": item.code, "title": item.title, "archived": item.archived_at is not None}
     if "code" in data and data["code"] is not None:
@@ -430,13 +461,24 @@ def _employee_out(
 
 
 def list_employees(
-    session: Session, workspace_id: uuid.UUID, *, include_archived: bool = False
+    session: Session,
+    workspace_id: uuid.UUID,
+    *,
+    include_archived: bool = False,
+    only: tuple[bool, uuid.UUID | None] = (False, None),
 ) -> list[dict[str, Any]]:
-    """Все сотрудники компании — пятью запросами на любое их число."""
+    """Все сотрудники компании — пятью запросами на любое их число.
+
+    `only` — у начальника отдела только люди его отдела.
+    """
     ensure_member_employees(session, workspace_id)
     query = sa.select(Employee).where(Employee.workspace_id == workspace_id)
     if not include_archived:
         query = query.where(Employee.archived_at.is_(None))
+    if only[0]:
+        if only[1] is None:
+            return []
+        query = query.where(Employee.department_id == only[1])
     employees = list(session.scalars(query.order_by(Employee.position, Employee.full_name)))
     user_ids = [item.user_id for item in employees if item.user_id]
     users: dict[uuid.UUID, FinanceUser] = {}
@@ -524,6 +566,15 @@ def create_employee(session: Session, workspace: Workspace, member: auth.Member,
     было ни вернуть, ни завести заново.
     """
     _check_people(member)
+    if member.rights.people_department_only:
+        # Начальник отдела заводит людей только к себе: отдел ставится сам.
+        own = member.rights.department_id
+        if own is None:
+            raise Forbidden("У вас нет отдела — сотрудников заводит администратор")
+        asked = data.get("department_id")
+        if asked not in (None, "") and str(asked) != str(own):
+            raise Forbidden("Сотрудника в другой отдел заводит администратор")
+        data = {**data, "department_id": str(own)}
     full_name = str(data.get("full_name") or "").strip()
     if len(full_name) < 2:
         raise PeopleError("Укажите ФИО")
@@ -539,6 +590,8 @@ def create_employee(session: Session, workspace: Workspace, member: auth.Member,
     )
     if existing is not None and existing.archived_at is None:
         raise PeopleError("Сотрудник с таким именем уже есть — уточните ФИО")
+    if existing is not None and not member.rights.reaches(existing.department_id) and existing.department_id is not None:
+        raise Forbidden("Человек с этим именем был в другом отделе — вернуть его может администратор")
     if existing is not None:
         employee = existing
         employee.archived_at = None
@@ -610,6 +663,7 @@ def create_account(
 ) -> FinanceUser:
     """Открыть вход: учётка по номеру ждёт пароль 72 часа."""
     _check_people(member)
+    _check_reach(member, employee)
     if role not in ("employee", "admin"):
         raise PeopleError("Роль — сотрудник или администратор")
     if role == "admin" and member.role != "owner":
@@ -680,6 +734,7 @@ def update_employee(
     employee = get_employee(session, workspace.id, employee_id)
     target = _membership(session, workspace.id, employee.user_id)
     _check_manage(member, target)
+    _check_reach(member, employee)
     user = session.get(FinanceUser, employee.user_id) if employee.user_id else None
     before: dict[str, Any] = {}
     after: dict[str, Any] = {}
@@ -697,6 +752,8 @@ def update_employee(
             employee.job_title = value
     if "department_id" in data:
         value = _clean_department(session, workspace.id, data.get("department_id"))
+        if value != employee.department_id and member.rights.people_department_only:
+            raise Forbidden("Перевести в другой отдел может администратор")
         if value != employee.department_id:
             before["department_id"] = str(employee.department_id) if employee.department_id else None
             after["department_id"] = str(value) if value else None
@@ -759,6 +816,7 @@ def archive_employee(session: Session, workspace: Workspace, member: auth.Member
     employee = get_employee(session, workspace.id, employee_id)
     target = _membership(session, workspace.id, employee.user_id)
     _check_manage(member, target)
+    _check_reach(member, employee)
     if target is not None:
         _remove_access(session, workspace, member, employee, target)
     employee.archived_at = _now()
@@ -786,6 +844,7 @@ def reset_password(session: Session, workspace: Workspace, member: auth.Member, 
     if user.id == member.user_id:
         raise PeopleError("Свой пароль меняется в профиле")
     _check_manage(member, target)
+    _check_reach(member, employee)
     if _other_companies(session, user.id, workspace.id):
         raise Forbidden("Учётка состоит и в другой компании — сбросить её пароль отсюда нельзя")
     if not user.phone:
@@ -818,6 +877,7 @@ def set_blocked(
     if target.role == "owner":
         raise Forbidden("Вход владельца не закрыть")
     _check_manage(member, target)
+    _check_reach(member, employee)
     if blocked == (target.blocked_at is not None):
         return employee
     target.blocked_at = _now() if blocked else None
@@ -836,6 +896,8 @@ def end_employee_sessions(session: Session, workspace: Workspace, member: auth.M
     employee = get_employee(session, workspace.id, employee_id)
     _user, target = _account_of(session, workspace.id, employee)
     _check_manage(member, target)
+    if target.user_id != member.user_id:
+        _check_reach(member, employee)
     keep = member.session_id if target.user_id == member.user_id else None
     closed = auth.end_sessions(session, target.user_id, workspace_id=workspace.id, keep=keep)
     session.flush()
@@ -860,6 +922,8 @@ def employee_sessions(session: Session, workspace: Workspace, member: auth.Membe
         _check_people(member, "view")
         if target.role == "owner" or (target.role == "admin" and member.role != "owner"):
             raise NotFound("Сотрудник не найден")
+        if not member.rights.reaches(employee.department_id):
+            raise NotFound("Сотрудник не найден")
     return auth.sessions_of(session, target.user_id, current=member.session_id, workspace_id=workspace.id)
 
 
@@ -881,6 +945,7 @@ __all__ = [
     "get_department",
     "get_employee",
     "list_departments",
+    "reach_department",
     "list_employees",
     "rename_employee",
     "reset_password",

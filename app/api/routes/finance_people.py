@@ -7,7 +7,8 @@
 Что фронт получает на отказ
 ───────────────────────────
 * 403 — действие не открыто (права «Сотрудники и права», чужая роль:
-  администратор не меняет владельца и других администраторов);
+  администратор не меняет владельца и других администраторов; начальник
+  отдела — людей другого отдела, отделы и права выше своих);
 * 404 — нет такого или он чужой; ответ одинаковый, иначе перебор
   идентификаторов выдавал бы, кто есть в другой компании;
 * 400 — значение нельзя принять, с текстом;
@@ -82,9 +83,12 @@ def people_overview(
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
+        only = people.reach_department(member)
         return {
-            "departments": people.list_departments(session, workspace.id, include_archived=include_archived),
-            "employees": people.list_employees(session, workspace.id, include_archived=include_archived),
+            "departments": people.list_departments(
+                session, workspace.id, include_archived=include_archived, only=only
+            ),
+            "employees": people.list_employees(session, workspace.id, include_archived=include_archived, only=only),
         }
 
 
@@ -95,7 +99,11 @@ def list_departments(
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
-        return {"items": people.list_departments(session, workspace.id, include_archived=include_archived)}
+        return {
+            "items": people.list_departments(
+                session, workspace.id, include_archived=include_archived, only=people.reach_department(member)
+            )
+        }
 
 
 @router.post("/people/departments", status_code=201)
@@ -133,7 +141,11 @@ def list_employees(
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
-        return {"items": people.list_employees(session, workspace.id, include_archived=include_archived)}
+        return {
+            "items": people.list_employees(
+                session, workspace.id, include_archived=include_archived, only=people.reach_department(member)
+            )
+        }
 
 
 @router.post("/people/employees", status_code=201)
@@ -158,6 +170,8 @@ def get_employee(employee_id: UUID, member: Member = Depends(require_access("peo
             employee = people.get_employee(session, workspace.id, employee_id)
         except people.PeopleError as exc:
             raise _people_fail(exc) from exc
+        if not member.rights.reaches(employee.department_id):
+            raise HTTPException(status_code=404, detail="Сотрудник не найден")
         return people.employee_payload(session, workspace.id, employee)
 
 
@@ -295,8 +309,12 @@ def access_catalog(member: Member = Depends(require_access("people"))) -> dict[s
         return access_module.catalog(session, workspace.id)
 
 
-def _subject(session, workspace_id: UUID, kind: str, subject_id: UUID):
-    """Отдел или сотрудник этой компании; чужой — 404, как несуществующий."""
+def _subject(session, workspace_id: UUID, kind: str, subject_id: UUID, member: Member):
+    """Отдел или сотрудник этой компании; чужой — 404, как несуществующий.
+
+    Начальнику отдела (`people_department_only`) другие отделы и их люди —
+    тоже 404: он их и в списке не видит.
+    """
     from app.finance.contracts.models import Department, Employee
 
     if kind == "department":
@@ -307,6 +325,9 @@ def _subject(session, workspace_id: UUID, kind: str, subject_id: UUID):
         raise HTTPException(status_code=404, detail="Права бывают у отдела или сотрудника")
     if item is None or item.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Не найдено")
+    reach = item.id if kind == "department" else item.department_id
+    if not member.rights.reaches(reach):
+        raise HTTPException(status_code=404, detail="Не найдено")
     return item
 
 
@@ -315,6 +336,51 @@ def _effective(rights: access_module.Rights, fields: list[tuple[str, str]]) -> d
     for key, _title in fields:
         out[f"{access_module.FIELD_PREFIX}{key}"] = rights.field_level(key)
     return out
+
+
+def _department_people(session, workspace_id: UUID, department_id: UUID) -> dict[str, Any]:
+    """Люди отдела со входом и кто из них начальник.
+
+    Начальник — не отдельное поле, а право: «Сотрудники и права» с областью
+    «своего отдела», записанное человеку лично (`access.py`, «Начальник
+    отдела»). Экран прав отдела показывает его строкой «Начальник» и ставит
+    тем же правом — второго источника правды нет.
+    """
+    from app.finance.accounts_model import AccessGrant, FinanceMembership
+    from app.finance.contracts.models import Employee
+
+    members = session.execute(
+        sa.select(Employee.id, Employee.full_name, FinanceMembership.role)
+        .join(
+            FinanceMembership,
+            sa.and_(FinanceMembership.user_id == Employee.user_id, FinanceMembership.workspace_id == workspace_id),
+        )
+        .where(
+            Employee.workspace_id == workspace_id,
+            Employee.department_id == department_id,
+            Employee.archived_at.is_(None),
+        )
+        .order_by(Employee.position, Employee.full_name)
+    ).all()
+    heads = {
+        str(subject_id)
+        for subject_id, level, scope in session.execute(
+            sa.select(AccessGrant.subject_id, AccessGrant.level, AccessGrant.scope).where(
+                AccessGrant.workspace_id == workspace_id,
+                AccessGrant.subject_kind == "employee",
+                AccessGrant.resource == "people",
+                AccessGrant.subject_id.in_([row[0] for row in members] or [None]),
+            )
+        )
+        if level == "edit" and (scope or {}).get("rows") == "department"
+    }
+    return {
+        "members": [
+            {"id": str(eid), "name": name, "admin": role in access_module.ADMIN_ROLES}
+            for eid, name, role in members
+        ],
+        "heads": sorted(heads),
+    }
 
 
 def _access_payload(session, workspace_id: UUID, kind: str, item) -> dict[str, Any]:
@@ -332,6 +398,7 @@ def _access_payload(session, workspace_id: UUID, kind: str, item) -> dict[str, A
             "grants": grants,
             "effective": _effective(rights, fields),
             "contracts_scope": rights.contracts_scope(),
+            **_department_people(session, workspace_id, item.id),
         }
     role = None
     if item.user_id is not None:
@@ -381,7 +448,7 @@ def get_access(kind: str, subject_id: UUID, member: Member = Depends(require_acc
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
-        item = _subject(session, workspace.id, kind, subject_id)
+        item = _subject(session, workspace.id, kind, subject_id, member)
         return _access_payload(session, workspace.id, kind, item)
 
 
@@ -394,7 +461,9 @@ def put_access(
     changes = body.changes if body.changes is not None else (body.grants or {})
     with finance_session() as session:
         workspace = _workspace(session, member)
-        item = _subject(session, workspace.id, kind, subject_id)
+        item = _subject(session, workspace.id, kind, subject_id, member)
+        if kind == "department" and member.rights.people_department_only:
+            raise HTTPException(status_code=403, detail="Права отдела меняет администратор")
         if kind == "employee":
             from app.finance.accounts_model import FinanceMembership
 
@@ -412,7 +481,9 @@ def put_access(
         elif not member.rights.is_admin and item.id == member.rights.department_id:
             raise HTTPException(status_code=403, detail="Права своего отдела меняет администратор")
         try:
-            done = access_module.put_grants(session, workspace.id, kind, item.id, changes, by=member.user_id)
+            done = access_module.put_grants(
+                session, workspace.id, kind, item.id, changes, by=member.user_id, granter=member.rights
+            )
         except access_module.GrantError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if done:
@@ -556,8 +627,10 @@ def list_notifications(
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
+        only, department = people.reach_department(member)
         return notifications.listing(
-            session, workspace.id, viewer_id=member.user_id, include_resolved=include_resolved
+            session, workspace.id, viewer_id=member.user_id, include_resolved=include_resolved,
+            department=(department,) if only else None,
         )
 
 
@@ -568,15 +641,25 @@ def resolve_notification(
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
+        only, department = people.reach_department(member)
         try:
-            item = notifications.resolve(session, workspace.id, notification_id, by=member.user_id)
+            item = notifications.resolve(
+                session, workspace.id, notification_id, by=member.user_id,
+                department=(department,) if only else None,
+            )
         except notifications.NotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         history.write(
             session, workspace, kind="notification.resolve", entity="notification", entity_id=item.id,
             title=f"запрос закрыт: {item.kind}", after={"kind": item.kind},
         )
-        return {"ok": True, "id": str(item.id), "pending": notifications.pending_count(session, workspace.id)}
+        return {
+            "ok": True,
+            "id": str(item.id),
+            "pending": notifications.pending_count(
+                session, workspace.id, department=(department,) if only else None
+            ),
+        }
 
 
 __all__ = ["router"]
