@@ -51,6 +51,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("PUT", "/looks/{key}"): "личный вид листа — настройка экрана одной учётки, не данные компании",
     ("DELETE", "/looks/{key}"): "сброс личного вида листа — настройка экрана одной учётки, не данные компании",
+    ("POST", "/looks/habits/{group}"): "привычка вида раздела (минуты в «Таблице» и «Карточках») — экран одной учётки",
 }
 
 
@@ -414,6 +415,14 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
     walk.call(owner, "POST", "/contracts/imports/{batch_id}/apply", batch_id=upload["id"])
     again = owner.post(f"{BASE}/contracts/imports", files={"file": ("реестр.xlsx", _registry_file(), XLSX)}).json()
     walk.call(owner, "POST", "/contracts/imports/{batch_id}/cancel", batch_id=again["id"])
+
+    # ── передача владения — последней: дальше владелец уже администратор ──
+    heir = owner.post(
+        f"{BASE}/auth/members",
+        json={"email": "heir@bbc.kz", "password": "heir-pass-1", "role": "admin", "full_name": "Наследник Дел"},
+    )
+    assert heir.status_code < 400, heir.text
+    walk.call(owner, "POST", "/auth/owner", json={"user_id": heir.json()["id"], "password": "new-pass-123"})
 
     # ── все изменяющие маршруты пройдены или названы с причиной ─────────
     mutating = {

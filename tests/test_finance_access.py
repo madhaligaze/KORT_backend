@@ -146,6 +146,8 @@ READONLY_POSTS = {
 PERSONAL_WRITES = {
     ("PUT", "/looks/{key}"),
     ("DELETE", "/looks/{key}"),
+    # Привычка вида раздела — тоже своё, не данные компании (29.09.2026).
+    ("POST", "/looks/habits/{group}"),
 }
 
 

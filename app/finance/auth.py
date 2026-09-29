@@ -944,6 +944,68 @@ def change_role(session: Session, member: Member, *, user_id: uuid.UUID, role: s
         )
 
 
+#: Кем остаётся прежний владелец после передачи.
+KEEP_ROLES = ("admin", "employee")
+_ROLE_WORDS = {"owner": "владелец", "admin": "администратор", "employee": "сотрудник"}
+
+
+def transfer_ownership(
+    session: Session, member: Member, *, user_id: uuid.UUID, password: str, keep: str = "admin"
+) -> FinanceMembership:
+    """Передать владение компанией другому человеку (29.09.2026).
+
+    Исключительное право владельца: только он, только со своим паролем и
+    только тому, кто уже входит в компанию сам (действующая учётка — не
+    «ждёт пароль» и не заблокирована): иначе компания осталась бы без
+    владельца, который может войти. Прежний владелец становится
+    администратором (или сотрудником — `keep`). Вернуть владение может только
+    новый владелец: у администратора этой двери нет.
+    """
+    from app.finance import people
+
+    if member.role != "owner":
+        raise AuthError("Передать владение может только владелец")
+    if keep not in KEEP_ROLES:
+        raise AuthError("Кем остаться: администратором или сотрудником")
+    if user_id == member.user_id:
+        raise AuthError("Выберите другого человека")
+    me = session.get(FinanceUser, member.user_id)
+    if me is None or not verify_password(me.password_hash, password or ""):
+        raise AuthError("Пароль не подошёл")
+    rows = {
+        row.user_id: row
+        for row in session.scalars(
+            sa.select(FinanceMembership).where(
+                FinanceMembership.workspace_id == member.workspace_id,
+                FinanceMembership.user_id.in_([member.user_id, user_id]),
+            )
+        )
+    }
+    target, mine = rows.get(user_id), rows.get(member.user_id)
+    if target is None or mine is None:
+        raise AuthError("Этот человек не в компании")
+    user = session.get(FinanceUser, user_id)
+    if user is None or user.status != "active" or not user.password_hash:
+        raise AuthError("Владельцем может стать только тот, кто уже входит сам: у этой учётки нет пароля или вход закрыт")
+    target_before = target.role
+    target.role = "owner"
+    mine.role = keep
+    session.flush()
+    new_owner = people.ensure_employee(session, member.workspace_id, user)
+    old_owner = people.ensure_employee(session, member.workspace_id, me)
+    _event(
+        session, member.workspace_id, "people.owner",
+        title=f"владение передано: {old_owner.full_name} → {new_owner.full_name}; "
+        f"{old_owner.full_name} теперь {_ROLE_WORDS[keep]}",
+        user_id=member.user_id, session_id=member.session_id, ip=member.ip,
+        user_agent=member.user_agent, actor=member.login,
+        entity="employee", entity_id=new_owner.id,
+        before={"owner": str(member.user_id), "new_owner_role": target_before},
+        after={"owner": str(user_id), "previous_owner_role": keep},
+    )
+    return target
+
+
 def remove_member(session: Session, member: Member, *, user_id: uuid.UUID) -> None:
     from app.finance import people
 
@@ -1189,6 +1251,7 @@ __all__ = [
     "sessions_of",
     "set_password",
     "set_email",
+    "transfer_ownership",
     "set_profile",
     "switch_company",
     "verify_password",

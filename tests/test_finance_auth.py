@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import uuid
+
 import pytest
 import sqlalchemy as sa
 
@@ -231,3 +233,46 @@ def test_svoya_pochta_menyaetsya_s_parolem_i_vkhod_po_novoy(finance_db) -> None:
             auth.login(session, email="old@bbc.kz", password="pass-12345")
         again, _token = auth.login(session, email="new@bbc.kz", password="pass-12345")
         assert again.role == "owner"
+
+
+def test_peredacha_vladeniya_tolko_vladelcem_s_parolem_i_deystvuyushchemu(finance_db) -> None:
+    """29.09.2026: «владельцем может стать другой, а я — администратором».
+    Исключительное право: только владелец, только с паролем, только тому,
+    кто уже входит сам; прежний владелец остаётся администратором."""
+    from app.finance.accounts_model import FinanceMembership, FinanceUser
+
+    _owner, workspace_id, _token = register(email="boss@bbc.kz")
+    with finance_session() as session:
+        boss, _t = auth.login(session, email="boss@bbc.kz", password="pass-12345")
+        heir = auth.invite(session, boss, email="heir@bbc.kz", password="heir-pass-1", role="admin", full_name="Наследник Дел")
+        target = uuid.UUID(str(heir["id"]))
+    with finance_session() as session:
+        heir_member, _t = auth.login(session, email="heir@bbc.kz", password="heir-pass-1")
+        with pytest.raises(AuthError, match="только владелец"):
+            auth.transfer_ownership(session, heir_member, user_id=boss.user_id, password="heir-pass-1")
+        with pytest.raises(AuthError, match="Пароль"):
+            auth.transfer_ownership(session, boss, user_id=target, password="не тот")
+    with finance_session() as session:
+        pending = session.get(FinanceUser, target)
+        pending.status = "pending"
+    with finance_session() as session:
+        with pytest.raises(AuthError, match="входит сам"):
+            auth.transfer_ownership(session, boss, user_id=target, password="pass-12345")
+    with finance_session() as session:
+        session.get(FinanceUser, target).status = "active"
+    with finance_session() as session:
+        auth.transfer_ownership(session, boss, user_id=target, password="pass-12345")
+        roles = {
+            row.user_id: row.role
+            for row in session.scalars(sa.select(FinanceMembership).where(FinanceMembership.workspace_id == workspace_id))
+        }
+    assert roles[target] == "owner" and roles[boss.user_id] == "admin", roles
+    # Вернуть может только новый владелец.
+    with finance_session() as session:
+        again, _t = auth.login(session, email="heir@bbc.kz", password="heir-pass-1")
+        auth.transfer_ownership(session, again, user_id=boss.user_id, password="heir-pass-1", keep="admin")
+        back = {
+            row.user_id: row.role
+            for row in session.scalars(sa.select(FinanceMembership).where(FinanceMembership.workspace_id == workspace_id))
+        }
+    assert back[boss.user_id] == "owner" and back[target] == "admin", back

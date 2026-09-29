@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api.routes.finance import _guard, _workspace, require_access
+from app.finance import habits
 from app.finance.auth import Member
 from app.finance.db import finance_session
 from app.finance.models import SheetLook
@@ -38,9 +39,50 @@ class LookIn(BaseModel):
 
 
 def _key(key: str) -> str:
-    if not _KEY.match(key):
+    # `habits` — привычки учётки в том же хранилище; как вид листа их не читают и не пишут.
+    if not _KEY.match(key) or key == habits.KEY:
         raise HTTPException(status_code=404, detail="Такого листа нет")
     return key
+
+
+# ── Привычки: каким видом раздела человек пользуется (`app/finance/habits.py`) ──
+# Объявлены до `/{key}`: иначе `habits` читался бы как ключ листа.
+
+
+class HabitIn(BaseModel):
+    mode: str
+    #: Минуты работы в виде с прошлого отчёта (вкладка на виду, человек не бездействует).
+    minutes: float = 0.0
+    #: Человек сам переключился на этот вид.
+    pick: bool = False
+
+
+@router.get("/habits/prefer")
+def get_prefer(member: Member = Depends(sheet_viewer)) -> dict[str, Any]:
+    """Вид по умолчанию для разделов, где у учётки есть явная привычка."""
+    _guard()
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        row = session.get(SheetLook, (member.user_id, workspace.id, habits.KEY))
+        return {"prefer": habits.prefer(row.look if row is not None else {})}
+
+
+@router.post("/habits/{group}")
+def post_habit(group: str, body: HabitIn, member: Member = Depends(sheet_viewer)) -> dict[str, Any]:
+    """Отчёт фронта о работе в виде. В журнал не пишется: это привычка экрана одной учётки."""
+    _guard()
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        row = session.get(SheetLook, (member.user_id, workspace.id, habits.KEY))
+        if row is None:
+            row = SheetLook(user_id=member.user_id, workspace_id=workspace.id, key=habits.KEY, look={})
+            session.add(row)
+        try:
+            row.look = habits.record(row.look or {}, group, body.mode, minutes=body.minutes, pick=body.pick)
+        except habits.HabitError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        row.updated_at = datetime.now(timezone.utc)
+        return {"prefer": habits.prefer(row.look)}
 
 
 @router.get("/{key}")

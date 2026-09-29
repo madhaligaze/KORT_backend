@@ -360,6 +360,16 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
                     else None
                 ),
             }
+    # Привычки учётки (`app/finance/habits.py`) — вместе с «кто я»: вход сразу
+    # открывает раздел видом по привычке, и на новом компьютере тоже, не
+    # дожидаясь отдельного запроса.
+    prefer: dict[str, str] = {}
+    if member.workspace_id is not None:
+        from app.finance import habits
+        from app.finance.models import SheetLook
+
+        stored = session.get(SheetLook, (member.user_id, member.workspace_id, habits.KEY))
+        prefer = habits.prefer(stored.look) if stored is not None else {}
     return {
         "authenticated": True,
         "user": {
@@ -381,6 +391,7 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
         "contracts_scope": rights.contracts_scope(),
         "pending_requests": pending,
         "employee": employee_out,
+        "habits": prefer,
     }
 
 
@@ -679,6 +690,26 @@ def auth_remove_member(
         except AuthError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True}
+
+
+class OwnerIn(BaseModel):
+    user_id: UUID
+    #: Пароль владельца — передача владения необратима без нового владельца.
+    password: str
+    #: Кем остаться: `admin` | `employee`.
+    keep: str = "admin"
+
+
+@router.post("/auth/owner")
+def auth_transfer_owner(body: OwnerIn, member: Member = Depends(require_role("owner"))) -> dict[str, Any]:
+    """Передать владение компанией — исключительное право владельца."""
+    _guard()
+    with finance_session() as session:
+        try:
+            auth.transfer_ownership(session, member, user_id=body.user_id, password=body.password, keep=body.keep)
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "owner": str(body.user_id), "role": body.keep}
 
 
 class PasswordIn(BaseModel):
