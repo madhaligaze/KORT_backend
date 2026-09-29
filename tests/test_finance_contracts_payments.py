@@ -209,3 +209,49 @@ def test_novaya_kompaniya_polya_po_vypiske_v_liste(space):
         ]
         assert with_live_columns([{"key": "amount"}]) == [{"key": "amount"}]
         assert session.get(GroupEntity, _make(session, space, executor="BBC").executor_id) is not None
+
+
+def test_vygruzka_s_oplatami_po_vypiske_i_oformleniem(space):
+    """30.09: «Оплачено/Остаток по выписке» выходили в .xlsx пустыми, формат
+    «# ##0» показывал 1 200 000 как «1200 000», выбор уходил ключом, строки с
+    несколькими строками текста Excel растягивал."""
+    import io
+
+    from openpyxl import load_workbook
+
+    from app.finance.contracts import export
+
+    with finance_session() as session:
+        workspace = _ws(session, space)
+        contract = _make(session, space, executor="BBC", customer="ТОО Альфа", type="Разовая услуга",
+                         amount="1 200 000", signed_at="10.01.2026", number="№ А-1",
+                         folder_url="https://example.bitrix24.kz/disk/путь?id=1&x=2",
+                         amendments_text="№ 1 от 01.02.2026\n№ 2 от 01.03.2026")
+        service.patch(session, workspace, FULL, OWNER, contract.id, {"end_kind": "terminated"}, known_seq=None)
+        _income(session, space, "ТОО АЛЬФА", "150000", date(2026, 2, 1))
+        registry = service.Registry(session, workspace)
+        main = next(view for view in registry.views if view.main)
+        main.blocks = [{**(main.blocks or [{}])[0], "columns": [
+            {"key": "row_number", "label": "№"}, {"key": "number"}, {"key": "amount"},
+            {"key": "paid_snapshot"}, {"key": "remaining_snapshot"}, {"key": "folder_url"},
+            {"key": "amendments_text"}, {"key": "end_kind"},
+        ]}]
+        session.flush()
+        data = export.build(session, workspace, FULL, OWNER)
+        closed = export.build(session, workspace, service.Access(view=True, hidden=frozenset({"paid", "remaining"})), OWNER)
+    sheet = load_workbook(io.BytesIO(data)).worksheets[0]
+    head = [cell.value for cell in sheet[1]]
+    row = {head[index]: cell for index, cell in enumerate(sheet[2])}
+    assert head.index("Оплачено по выписке") == head.index("Остаток по выписке") - 1
+    assert row["Оплачено по выписке"].value == 150000 and row["Остаток по выписке"].value == 1050000
+    assert row["Сумма Договора"].value == 1200000 and row["Сумма Договора"].number_format == "#,##0"
+    assert row["Смысл даты окончания"].value == "Расторжение"
+    link = next(cell for cell in sheet[2] if str(cell.value).startswith("https://"))
+    assert link.hyperlink is not None and "%D0%BF" in link.hyperlink.target
+    lines = next(cell for cell in sheet[2] if isinstance(cell.value, str) and "\n" in cell.value)
+    assert lines.alignment.wrap_text and lines.alignment.vertical == "top"
+    assert sheet.row_dimensions[2].height == export.ROW_HEIGHT
+    assert sheet.auto_filter.ref == f"A1:{sheet.cell(row=1, column=len(head)).column_letter}2"
+    # Кому журнал не открыт — колонок по выписке в файле нет.
+    other = [cell.value for cell in load_workbook(io.BytesIO(closed)).worksheets[0][1]]
+    assert "Оплачено по выписке" not in other and "Сумма Договора" in other
