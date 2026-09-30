@@ -228,6 +228,31 @@ def test_razovye_dva_statusa_i_zelyonaya_stroka(space):
         assert "paint" not in cleared.blocks[0]
 
 
+def test_razovye_tolko_dva_statusa(space):
+    """30.09.2026: «Не состоялся» стоял в «Разовых ЮО», хотя книга юротдела держит
+    только «на исполнении» и «исполнен». Решение владельца: в реестре - все
+    договоры, в «Разовых» - только эти два статуса, без статуса тоже нет."""
+    with finance_session() as session:
+        workspace = _ws(session, space)
+        setup.add_value(session, workspace, "status", "нужно закрыть по бух")
+        signed = (service.today() - timedelta(days=20)).isoformat()
+        for number, status in (
+            ("№ЮО/1", "На исполнении"), ("№ЮО/2", "Исполнен"), ("№ЮО/3", "Не состоялся"),
+            ("№ЮО/4", "Недействующий"), ("№ЮО/5", "нужно закрыть по бух"), ("№ЮО/6", ""),
+        ):
+            _make(session, space, executor="BBC legal support", customer=f"ТОО {number}", number=number,
+                  type="Разовая услуга", status=status, signed_at=signed)
+        listed = service.list_all(session, workspace, FULL)["contracts"]
+        places = {item["values"]["number"]: {place["view"] for place in item["views"]} for item in listed}
+        oneoff = {number: {view for view in views if view.startswith("oneoff")} for number, views in places.items()}
+        assert oneoff["№ЮО/1"] == {"oneoff", "oneoff_2m"}
+        assert oneoff["№ЮО/2"] == {"oneoff"}
+        for number in ("№ЮО/3", "№ЮО/4", "№ЮО/5", "№ЮО/6"):
+            assert oneoff[number] == set(), number
+        # Реестр держит всё.
+        assert all("main" in views for views in places.values())
+
+
 def test_vygruzka_bez_vybora_tolko_reestr(space):
     with finance_session() as session:
         workspace = _ws(session, space)

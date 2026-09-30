@@ -589,6 +589,12 @@ def _seed_oneoff(session: Session, workspace: Workspace) -> None:
     дней) и «Остатки» - работа идёт / завершена, а оплачено не всё. Засев
     общий: вид «Разовая услуга» засевается каждой компании. Нет его (удалили,
     переименовали) - книга остаётся пустой, листы заводят в настройке.
+
+    Статус - только два книги юротдела. 30.09.2026 в «Разовых ЮО» стояли
+    десять «Не состоялся», «Недействующий» и «нужно закрыть по бух» -
+    договоры главного реестра, которых в книге юротдела нет. Решение
+    владельца: все договоры видны в реестре, а в «Разовых» (листы и
+    карточки) - только «На исполнении» и «Исполнен», без статуса тоже нет.
     """
     value = session.scalar(
         sa.select(ListValue).where(
@@ -606,11 +612,12 @@ def _seed_oneoff(session: Session, workspace: Workspace) -> None:
     extras = oneoff_status_extras(session, workspace.id)
     if extras.get("status"):
         defaults["status"] = extras["status"]
+    two = [{"field": "status", "op": "in", "value": list(extras["choices"])}] if extras.get("choices") else []
 
     def block(title: str, *conditions: dict[str, Any], with_age: bool = True) -> dict[str, Any]:
         out: dict[str, Any] = {
             "title": title,
-            "filter": {"any": [{"all": [oneoff, *conditions]}]},
+            "filter": {"any": [{"all": [oneoff, *two, *conditions]}]},
             "roles": {},
             "columns": _oneoff_columns(with_age),
             "defaults": dict(defaults),
