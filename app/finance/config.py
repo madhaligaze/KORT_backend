@@ -1,12 +1,12 @@
-"""Настройки учёта KORT — отдельный BaseSettings (префикс FINANCE_ — от раздела «Финансы»).
+"""Настройки учёта KORT - отдельный BaseSettings (префикс FINANCE_ - от раздела «Финансы»).
 
 Переменные окружения (префикс FINANCE_):
-    FINANCE_ENABLED           — "false" выключает раздел целиком (по умолчанию true)
-    FINANCE_BASE_CURRENCY     — валюта компании, в которой сходятся отчёты (KZT)
-    FINANCE_IMPORT_MAX_ROWS   — потолок строк в одном импорте (20000)
-    FINANCE_IMPORT_MAX_MB     — потолок размера файла (15)
-    FINANCE_GRID_MAX_ROWS     — сколько операций отдаётся в табличный вид (10000)
-    FINANCE_SERVICE_ACCOUNT_JSON — креды Google для переноса книг в учёт: путь к
+    FINANCE_ENABLED           - "false" выключает раздел целиком (по умолчанию true)
+    FINANCE_BASE_CURRENCY     - валюта компании, в которой сходятся отчёты (KZT)
+    FINANCE_IMPORT_MAX_ROWS   - потолок строк в одном импорте (20000)
+    FINANCE_IMPORT_MAX_MB     - потолок размера файла (15)
+    FINANCE_GRID_MAX_ROWS     - сколько операций отдаётся в табличный вид (10000)
+    FINANCE_SERVICE_ACCOUNT_JSON - креды Google для переноса книг в учёт: путь к
                                 JSON сервисного аккаунта или сам JSON. Пусто ⇒
                                 service-account.json в корне репозитория
 
@@ -15,7 +15,7 @@
 Она одна и живёт в настройках, а не в коде: `amount_base` считается в ней, и
 смена валюты задним числом означает пересчёт каждой строки. Поэтому значение
 берётся из окружения один раз и попадает в `workspaces.base_currency` при
-создании пространства — дальше правда о валюте лежит в базе, а не здесь.
+создании пространства - дальше правда о валюте лежит в базе, а не здесь.
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class FinanceSettings(BaseSettings):
         raw = (self.service_account_json or "").strip()
         if not raw:
             return False
-        if raw.startswith("{"):  # JSON целиком — так креды лежат на Railway
+        if raw.startswith("{"):  # JSON целиком - так креды лежат на Railway
             return True
         path = self.credentials_path
         return path is not None and path.is_file()

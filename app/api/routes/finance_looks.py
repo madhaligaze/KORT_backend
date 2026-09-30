@@ -1,10 +1,10 @@
 """Личный вид листов «Финансов» (`/finance/looks/{key}`): у каждой учётки свой.
 
-Ширины колонок, перенос, цвета, жирный, скрытые колонки — то, что меняет вид
+Ширины колонок, перенос, цвета, жирный, скрытые колонки - то, что меняет вид
 листа и не меняет ни одного значения. Хранится за учёткой и компанией: вид,
 настроенный администратором, сотрудник не видит, и наоборот.
 
-Ключ — лист раздела: `journal`, `registry`, `registry.oneoff`. Содержимое
+Ключ - лист раздела: `journal`, `registry`, `registry.oneoff`. Содержимое
 разбирает и собирает фронт (`src/components/univer/look.ts`); сервер держит
 его как есть, ограничивая только размер.
 """
@@ -26,10 +26,10 @@ from app.finance.models import SheetLook
 
 router = APIRouter(prefix="/finance/looks", tags=["finance-looks"])
 
-#: Вид — у тех, кому открыт хоть один лист раздела.
+#: Вид - у тех, кому открыт хоть один лист раздела.
 sheet_viewer = require_access(("contracts", "journal", "table"), "view")
 
-#: Больше этого вид не бывает: сотни раскрашенных ячеек — десятки килобайт.
+#: Больше этого вид не бывает: сотни раскрашенных ячеек - десятки килобайт.
 MAX_BYTES = 512_000
 _KEY = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
@@ -39,7 +39,7 @@ class LookIn(BaseModel):
 
 
 def _key(key: str) -> str:
-    # `habits` — привычки учётки в том же хранилище; как вид листа их не читают и не пишут.
+    # `habits` - привычки учётки в том же хранилище; как вид листа их не читают и не пишут.
     if not _KEY.match(key) or key == habits.KEY:
         raise HTTPException(status_code=404, detail="Такого листа нет")
     return key
@@ -99,7 +99,7 @@ def put_look(key: str, body: LookIn, member: Member = Depends(sheet_viewer)) -> 
     """Вид не пишется в журнал действий: это не данные компании, а личная настройка экрана."""
     _guard()
     if len(json.dumps(body.look, ensure_ascii=False)) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="Вид листа слишком большой — сбросьте часть оформления")
+        raise HTTPException(status_code=413, detail="Вид листа слишком большой - сбросьте часть оформления")
     with finance_session() as session:
         workspace = _workspace(session, member)
         row = session.get(SheetLook, (member.user_id, workspace.id, _key(key)))

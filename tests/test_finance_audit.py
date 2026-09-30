@@ -1,13 +1,13 @@
 """Журнал действий пишется всегда: обход всех изменяющих маршрутов «Финансов».
 
-Один сценарий проходит каждый POST / PATCH / PUT / DELETE раздела — учёт,
-договоры, люди, права, входы — и после каждого проверяет, что в журнале
+Один сценарий проходит каждый POST / PATCH / PUT / DELETE раздела - учёт,
+договоры, люди, права, входы - и после каждого проверяет, что в журнале
 появилось событие с автором, сеансом, адресом, браузером и видом. Маршрут,
 который ничего не пишет, стоит в `ALLOWED` с причиной; новый маршрут без
 события и без причины роняет тест.
 
 Почему обход, а не проверка по месту: правка ячейки в листе журнала меняла
-операцию молча — событие писали карточка и импорт, а лист забыли, и
+операцию молча - событие писали карточка и импорт, а лист забыли, и
 «кто поменял сумму» по нему узнать было нельзя. Так забывают всегда в
 одном месте; ловит это только полный перебор.
 """
@@ -31,13 +31,13 @@ PASSWORD = "pass-12345"
 AGENT = "pytest-agent"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-#: Изменяющие маршруты без события — и почему.
+#: Изменяющие маршруты без события - и почему.
 ALLOWED: dict[tuple[str, str], str] = {
     ("POST", "/auth/phone/start"): "шаг входа: только отвечает, какой экран показать, ничего не меняет",
     ("POST", "/contracts/{contract_id}/amendments/parse"): "читает текст соглашений, в базу не пишет",
     ("POST", "/contracts/setup/views/preview"): "считает договоры под правило листа, в базу не пишет",
     ("POST", "/contracts/imports/{batch_id}/decide"): (
-        "решения протокола — черновик разбора; события пишут загрузка файла и заведение"
+        "решения протокола - черновик разбора; события пишут загрузка файла и заведение"
     ),
     ("PATCH", "/import/batches/{batch_id}/rows/{line}"): (
         "правка черновой строки партии: в учёт не попадает, событие пишет заведение партии"
@@ -49,9 +49,9 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("POST", "/recurrences/materialize"): (
         "пустое продление ничего не меняет и не пишет; с новыми ожиданиями пишет recurrence.materialize"
     ),
-    ("PUT", "/looks/{key}"): "личный вид листа — настройка экрана одной учётки, не данные компании",
-    ("DELETE", "/looks/{key}"): "сброс личного вида листа — настройка экрана одной учётки, не данные компании",
-    ("POST", "/looks/habits/{group}"): "привычка вида раздела (минуты в «Таблице» и «Карточках») — экран одной учётки",
+    ("PUT", "/looks/{key}"): "личный вид листа - настройка экрана одной учётки, не данные компании",
+    ("DELETE", "/looks/{key}"): "сброс личного вида листа - настройка экрана одной учётки, не данные компании",
+    ("POST", "/looks/habits/{group}"): "привычка вида раздела (минуты в «Таблице» и «Карточках») - экран одной учётки",
 }
 
 
@@ -253,7 +253,7 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
     ).json()
     token = walk.call(owner, "POST", "/integrations/{integration_id}/token", integration_id=integration["id"]).json()["token"]
     walk.call(owner, "PATCH", "/integrations/{integration_id}", integration_id=integration["id"], params={"state": "active"})
-    # Приём по токену: автора-человека нет, подпись — подключение.
+    # Приём по токену: автора-человека нет, подпись - подключение.
     walk.call(
         client(app), "POST", "/integrations/inbox", user=None, session=False, ip="", agent="",
         headers={"x-finance-token": token},
@@ -394,7 +394,7 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
                      json={"title": "Юристы", "blocks": [{"filter": rule_filter}]}).json()["id"]
     walk.call(owner, "PATCH", "/contracts/setup/views/{view_id}", view_id=view, json={"title": "Юристы ЮО"})
 
-    # ── сводка оплат: книга Google подменена — сеть в тесте не нужна ────
+    # ── сводка оплат: книга Google подменена - сеть в тесте не нужна ────
     from app.finance.contracts import summary as summary_module
 
     monkeypatch.setattr(
@@ -429,7 +429,7 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
     again = owner.post(f"{BASE}/contracts/imports", files={"file": ("реестр.xlsx", _registry_file(), XLSX)}).json()
     walk.call(owner, "POST", "/contracts/imports/{batch_id}/cancel", batch_id=again["id"])
 
-    # ── передача владения — последней: дальше владелец уже администратор ──
+    # ── передача владения - последней: дальше владелец уже администратор ──
     heir = owner.post(
         f"{BASE}/auth/members",
         json={"email": "heir@bbc.kz", "password": "heir-pass-1", "role": "admin", "full_name": "Наследник Дел"},
@@ -445,18 +445,18 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
         for method in route.methods
         if method in ("POST", "PATCH", "PUT", "DELETE")
     }
-    # Пустой обход — не «всё покрыто», а слепой тест (FastAPI 0.141).
+    # Пустой обход - не «всё покрыто», а слепой тест (FastAPI 0.141).
     assert mutating, "обход не нашёл ни одного изменяющего маршрута"
     missing = sorted(mutating - walk.covered - set(ALLOWED))
     assert not missing, "изменяющие маршруты без проверенного события: " + ", ".join(f"{m} {p}" for m, p in missing)
     stale = sorted(set(ALLOWED) - mutating)
     assert not stale, f"в ALLOWED маршруты, которых больше нет: {stale}"
-    assert not (walk.covered & set(ALLOWED)), "маршрут и пишет событие, и стоит в ALLOWED — уберите из списка"
+    assert not (walk.covered & set(ALLOWED)), "маршрут и пишет событие, и стоит в ALLOWED - уберите из списка"
 
 
 def test_zhurnal_nastroyki_govorit_chto_bylo_i_chto_stalo(app: FastAPI) -> None:
     """28.09.2026 владелец случайно спрятал «Планируемый срок завершения», а
-    журнал записал одно «поле изменено» и ключ — ни что сделано, ни как было.
+    журнал записал одно «поле изменено» и ключ - ни что сделано, ни как было.
     Теперь запись говорит словами и хранит «было → стало» того, что поменялось."""
     owner = client(app)
     owner.post(
@@ -477,7 +477,7 @@ def test_zhurnal_nastroyki_govorit_chto_bylo_i_chto_stalo(app: FastAPI) -> None:
     assert hidden.before == {"key": "planned_end_at", "hidden": False}
     assert hidden.after == {"key": "planned_end_at", "hidden": True}
 
-    # Вернули — запись тоже говорит, что поле снова видно.
+    # Вернули - запись тоже говорит, что поле снова видно.
     assert owner.patch(f"{BASE}/contracts/setup/fields/planned_end_at", json={"hidden": False}).status_code == 200
     back = last("contracts.setup.field_update")
     assert "снова в листе и карточке" in back.title, back.title

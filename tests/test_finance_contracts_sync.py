@@ -64,7 +64,7 @@ def test_probnyy_progon_nichego_ne_pishet_i_govorit_chto_budet(owner: TestClient
     report = _sync(owner, [row])
     line = report["rows"][0]
     assert report["dry_run"] is True and line["status"] == "matched"
-    assert _field(line, "status")["action"] == "conflict"  # в KORT «Действующий» — не трогаем без «all»
+    assert _field(line, "status")["action"] == "conflict"  # в KORT «Действующий» - не трогаем без «all»
     assert _field(line, "note")["action"] == "fill"
     assert _field(line, "amount")["action"] == "same"
     contract = owner.get(f"{BASE}/contracts/{line['contract_id']}").json()["contract"]
@@ -81,10 +81,10 @@ def test_primenenie_zapolnyaet_pustoe_a_rashozhdenie_tolko_s_all(owner: TestClie
     status = {item["id"]: item["value"] for item in schema["lists"]["status"]}
     assert one["values"]["note"] == "из книги"
     assert status[one["values"]["status"]] == "Действующий"
-    # Повтор — всё «совпадает», ничего не применяется.
+    # Повтор - всё «совпадает», ничего не применяется.
     again = _sync(owner, [row], apply=True)
     assert again["summary"]["fill"] == 0 and again["summary"]["applied"] == 0
-    # С «all» — расходящееся меняется, и в истории договора видно, что и как.
+    # С «all» - расходящееся меняется, и в истории договора видно, что и как.
     changed = _sync(owner, [row], apply=True, overwrite="all")
     assert changed["summary"]["change"] == 1 and changed["summary"]["applied"] == 1
     one = owner.get(f"{BASE}/contracts/{line['contract_id']}").json()["contract"]
@@ -120,6 +120,6 @@ def test_novyy_dogovor_zavoditsya_a_neznakomaya_kolonka_nazyvaetsya(owner: TestC
     assert "Колонка X" in line["unknown"]
     numbers = [item["values"].get("number") for item in owner.get(f"{BASE}/contracts").json()["contracts"]]
     assert "№ЮО/143" in numbers
-    # Только чтение — не пишется.
+    # Только чтение - не пишется.
     report = _sync(owner, [{"number": "ЮО/1", "values": {"Оплачено по выписке": "100"}}])
     assert any("только чтение" in item for item in report["rows"][0]["unknown"])

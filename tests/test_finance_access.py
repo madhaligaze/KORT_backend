@@ -4,16 +4,16 @@
 типы и линтер дыр в правах не ловят, экраны выглядят рабочими). Набор держит
 обещания плана:
 
-* каждый маршрут `/finance/*` объявляет свой раздел — обход падает на
+* каждый маршрут `/finance/*` объявляет свой раздел - обход падает на
   необъявленном;
-* учётка, ждущая пароль, не открывает ни одного маршрута; окно истекло —
+* учётка, ждущая пароль, не открывает ни одного маршрута; окно истекло -
   пароль не задать; незнакомый и активный номер отвечают одинаково;
-* сброс убивает сеансы и старый пароль; пятая неудача — уведомление;
-* без права на раздел — 403 и на чтении; договоры чужого отдела не приходят
+* сброс убивает сеансы и старый пароль; пятая неудача - уведомление;
+* без права на раздел - 403 и на чтении; договоры чужого отдела не приходят
   ни списком, ни по id; скрытое поле не приходит нигде;
 * администратор не сбрасывает владельца и других администраторов; пароль
-  владельца — только командой сервера;
-* `resolve()` остаётся дешёвым: запросов к базе на опрос — единицы.
+  владельца - только командой сервера;
+* `resolve()` остаётся дешёвым: запросов к базе на опрос - единицы.
 """
 from __future__ import annotations
 
@@ -120,23 +120,23 @@ PUBLIC = {
     ("POST", "/auth/phone/forgot"),
     ("POST", "/integrations/inbox"),
 }
-#: Своё: не требует права раздела. Список закрыт — новый маршрут «для себя»
+#: Своё: не требует права раздела. Список закрыт - новый маршрут «для себя»
 #: добавляется сюда осознанно, а не просто взятием `current_member`.
 SELF = {
     ("POST", "/auth/switch"),
     ("POST", "/auth/companies"),
     ("POST", "/auth/password"),
-    # Своя почта для входа — с паролем (29.09.2026).
+    # Своя почта для входа - с паролем (29.09.2026).
     ("POST", "/auth/email"),
     ("GET", "/auth/sessions"),
     ("DELETE", "/auth/sessions/{session_id}"),
     ("POST", "/auth/sessions/end-others"),
-    # Без права «Журнал действий» — только свои события; с ним — вся компания.
+    # Без права «Журнал действий» - только свои события; с ним - вся компания.
     ("GET", "/audit"),
     # Сигнал «открыт раздел» проверяет право на сам раздел внутри.
     ("POST", "/audit/view"),
 }
-#: Изменяющий метод, который ничего не меняет, — ему хватает «видит».
+#: Изменяющий метод, который ничего не меняет, - ему хватает «видит».
 READONLY_POSTS = {
     ("POST", "/contracts/{contract_id}/amendments/parse"),
     ("POST", "/contracts/setup/views/preview"),
@@ -146,7 +146,7 @@ READONLY_POSTS = {
 PERSONAL_WRITES = {
     ("PUT", "/looks/{key}"),
     ("DELETE", "/looks/{key}"),
-    # Привычка вида раздела — тоже своё, не данные компании (29.09.2026).
+    # Привычка вида раздела - тоже своё, не данные компании (29.09.2026).
     ("POST", "/looks/habits/{group}"),
 }
 
@@ -162,10 +162,10 @@ def _declarations(dependant) -> list[tuple[str, object]]:
 
 
 def test_kazhdyy_marshrut_finansov_obyavlyaet_razdel(app: FastAPI) -> None:
-    """Обход всех маршрутов раздела: необъявленный — падение.
+    """Обход всех маршрутов раздела: необъявленный - падение.
 
-    Правило плана: GET требует «видит», изменение — «правит»; «своё» и
-    открытые без входа — только из закрытых списков выше.
+    Правило плана: GET требует «видит», изменение - «правит»; «своё» и
+    открытые без входа - только из закрытых списков выше.
     """
     from finance_routes import api_routes
 
@@ -173,7 +173,7 @@ def test_kazhdyy_marshrut_finansov_obyavlyaet_razdel(app: FastAPI) -> None:
     seen_self: set[tuple[str, str]] = set()
     seen_public: set[tuple[str, str]] = set()
     routes = [(full, route) for full, route in api_routes() if full.startswith(BASE)]
-    # Пустой обход — не «всё объявлено», а слепой тест (FastAPI 0.141).
+    # Пустой обход - не «всё объявлено», а слепой тест (FastAPI 0.141).
     assert routes, "обход не нашёл ни одного маршрута раздела"
     for full, route in routes:
         path = full[len(BASE):]
@@ -187,11 +187,11 @@ def test_kazhdyy_marshrut_finansov_obyavlyaet_razdel(app: FastAPI) -> None:
                     problems.append(f"{method} {path}: раздел не объявлен")
                 continue
             if key in PUBLIC:
-                problems.append(f"{method} {path}: в списке открытых, но закрыт — уберите из PUBLIC")
+                problems.append(f"{method} {path}: в списке открытых, но закрыт - уберите из PUBLIC")
             for kind, value in marks:
                 if kind == "self":
                     if key not in SELF:
-                        problems.append(f"{method} {path}: «своё» без права раздела — не в списке SELF")
+                        problems.append(f"{method} {path}: «своё» без права раздела - не в списке SELF")
                     seen_self.add(key)
                 elif kind == "resource":
                     _resources, level = value
@@ -219,10 +219,10 @@ def test_vhod_po_nomeru_ot_zavedeniya_do_vhoda(app: FastAPI) -> None:
     assert me["role"] == "employee"
     assert me["user"]["phone"] == "+77025550122"
     assert me["employee"]["department"]["code"] == "ЮО"
-    assert set(me["access"].values()) == {"none"}, "нет записи — нет доступа"
+    assert set(me["access"].values()) == {"none"}, "нет записи - нет доступа"
     assert me["pending_requests"] == 0
 
-    # Администратор видит «пароль задан» с устройством и адресом — это сведение, не просьба.
+    # Администратор видит «пароль задан» с устройством и адресом - это сведение, не просьба.
     notes = owner.get(f"{BASE}/notifications").json()
     item = next(note for note in notes["items"] if note["kind"] == "password_set")
     assert item["actionable"] is False
@@ -285,7 +285,7 @@ def test_sbros_ubivaet_seansy_i_staryy_parol(app: FastAPI) -> None:
     person = activate(app, "+77009998877")
     assert person.get(f"{BASE}/operations").status_code == 200
 
-    # Просьба «забыл пароль» — в «Ждут решения»; сброс закрывает её сам.
+    # Просьба «забыл пароль» - в «Ждут решения»; сброс закрывает её сам.
     client(app).post(f"{BASE}/auth/phone/forgot", json={"phone": "+77009998877"})
     assert owner.get(f"{BASE}/auth/me").json()["pending_requests"] == 1
 
@@ -297,7 +297,7 @@ def test_sbros_ubivaet_seansy_i_staryy_parol(app: FastAPI) -> None:
     # Учётка, ждущая пароль, не открывает ни одного маршрута.
     assert person.get(f"{BASE}/operations").status_code == 401
     assert person.get(f"{BASE}/auth/me").json() == {"authenticated": False}
-    # Старый пароль не действует — и ответ не «неверный пароль», а «задайте»:
+    # Старый пароль не действует - и ответ не «неверный пароль», а «задайте»:
     # пароля у учётки нет вовсе, экран уводит к «Придумайте пароль».
     old = client(app).post(f"{BASE}/auth/phone/login", json={"phone": "+77009998877", "password": "secret-123"})
     assert old.status_code == 409 and old.json()["detail"] == auth.NEEDS_PASSWORD
@@ -321,7 +321,7 @@ def test_pyataya_neudacha_uvedomlyaet_a_shestaya_zhdyot(app: FastAPI) -> None:
     assert lock["subject"]["employee_id"] == card["id"]
     assert notes["pending"] == 1
 
-    # В журнале — пять неудач об этой учётке, автор неизвестен.
+    # В журнале - пять неудач об этой учётке, автор неизвестен.
     failures = owner.get(
         f"{BASE}/audit", params={"category": "auth", "kind": "auth.login_failed", "employee_id": card["id"]}
     ).json()["items"]
@@ -378,7 +378,7 @@ def test_svodka_ostatkov_svoim_pravom(app: FastAPI) -> None:
     assert person.get(f"{BASE}/auth/me").json()["access"]["reports.summary"] == "none"
     denied = person.get(f"{BASE}/overview")
     assert denied.status_code == 403 and "Остатки и долги" in denied.json()["detail"]
-    # Формам журнала счета нужны — по имени, без остатка.
+    # Формам журнала счета нужны - по имени, без остатка.
     accounts = person.get(f"{BASE}/dictionaries").json()["accounts"]
     assert accounts and all(item["starting_balance"] is None for item in accounts)
 
@@ -386,7 +386,7 @@ def test_svodka_ostatkov_svoim_pravom(app: FastAPI) -> None:
     assert person.get(f"{BASE}/overview").status_code == 200
     accounts = person.get(f"{BASE}/dictionaries").json()["accounts"]
     assert all(item["starting_balance"] is not None for item in accounts)
-    # Сводка — отчёт: правки у неё нет.
+    # Сводка - отчёт: правки у неё нет.
     wrong = owner.put(f"{BASE}/access/employee/{card['id']}", json={"changes": {"reports.summary": "edit"}})
     assert wrong.status_code == 400
     # Владельцу запись не нужна.
@@ -407,7 +407,7 @@ def test_lichnoe_poverh_otdelskogo(app: FastAPI) -> None:
     assert view["department_grants"]["journal"]["level"] == "edit"
     assert person.get(f"{BASE}/reports/debts").status_code == 403
 
-    # «Как у отдела» — личная запись снимается.
+    # «Как у отдела» - личная запись снимается.
     back = grant(owner, "employee", card["id"], {"reports.debts": None})
     assert "reports.debts" not in back["grants"] and back["effective"]["reports.debts"] == "view"
     assert person.get(f"{BASE}/reports/debts").status_code == 200
@@ -416,7 +416,7 @@ def test_lichnoe_poverh_otdelskogo(app: FastAPI) -> None:
     wrong = owner.put(f"{BASE}/access/department/{obo}", json={"changes": {"reports.debts": "edit"}})
     assert wrong.status_code == 400
 
-    # Каждое изменение прав — в журнале администрирования.
+    # Каждое изменение прав - в журнале администрирования.
     titles = [item["title"] for item in owner.get(f"{BASE}/audit", params={"category": "admin"}).json()["items"]]
     assert any("права отдела ОБО" in title and "Журнал" in title for title in titles)
 
@@ -468,7 +468,7 @@ def test_dogovory_chuzhogo_otdela_i_skrytoe_pole(app: FastAPI) -> None:
 
 
 def test_drugie_otdely_tolko_prosmotr(app: FastAPI) -> None:
-    """28.09.2026: администратор открывает юристу ЮО договоры НО — видеть, не править."""
+    """28.09.2026: администратор открывает юристу ЮО договоры НО - видеть, не править."""
     owner = register(app)
     yuo = department(owner, "ЮО")
     no = department(owner, "НО")
@@ -492,7 +492,7 @@ def test_drugie_otdely_tolko_prosmotr(app: FastAPI) -> None:
     assert "readonly" not in listing[mine] and listing[theirs]["readonly"] is True
     assert lawyer.get(f"{BASE}/contracts/{closed}").status_code == 404
 
-    # Свой — правится, чужой отдел — отказ словами, а не «не найден».
+    # Свой - правится, чужой отдел - отказ словами, а не «не найден».
     assert lawyer.patch(f"{BASE}/contracts/{mine}", json={"values": {"note": "звонили"}}).status_code == 200
     refused = lawyer.patch(f"{BASE}/contracts/{theirs}", json={"values": {"note": "звонили"}})
     assert refused.status_code == 400 and "только на просмотр" in refused.json()["detail"]
@@ -503,7 +503,7 @@ def test_drugie_otdely_tolko_prosmotr(app: FastAPI) -> None:
     scope = lawyer.get(f"{BASE}/auth/me").json()["contracts_scope"]
     assert scope["departments"] == [no]
 
-    # Чужой отдел в области — отказ; «все договоры» лишние отделы не хранят.
+    # Чужой отдел в области - отказ; «все договоры» лишние отделы не хранят.
     bad = owner.put(
         f"{BASE}/access/department/{yuo}",
         json={"changes": {"contracts": {"level": "edit", "scope": {"rows": "department", "departments": [str(uuid.uuid4())]}}}},
@@ -520,7 +520,7 @@ def test_zavedyonnyy_dogovor_ostayotsya_v_svoey_oblasti(app: FastAPI) -> None:
     own_card = employee(owner, "Ответственный Один", "+77021110001")
     grant(owner, "employee", own_card["id"], {"contracts": {"level": "edit", "scope": {"rows": "own"}}})
     dept_card = employee(owner, "Отделов Два", "+77021110002", yuo)
-    # Отдел — потолок: область «своего отдела» задаётся отделу, человек её наследует.
+    # Отдел - потолок: область «своего отдела» задаётся отделу, человек её наследует.
     grant(owner, "department", yuo, {"contracts": {"level": "edit", "scope": {"rows": "department"}}})
 
     for phone, key, expected in (
@@ -532,7 +532,7 @@ def test_zavedyonnyy_dogovor_ostayotsya_v_svoey_oblasti(app: FastAPI) -> None:
         assert made.status_code == 201, made.text
         contract = made.json()["contract"]
         assert contract["values"][key] == expected, contract["values"]
-        # Следующая правка того же договора — не «Договор не найден».
+        # Следующая правка того же договора - не «Договор не найден».
         again = person.patch(f"{BASE}/contracts/{contract['id']}", json={"values": {"note": "первый звонок"}})
         assert again.status_code == 200, again.text
         assert [item["id"] for item in person.get(f"{BASE}/contracts").json()["contracts"]] == [contract["id"]]
@@ -559,7 +559,7 @@ def test_admin_ne_sbrasyvaet_vladeltsa_i_drugogo_admina(app: FastAPI) -> None:
     # Администратора назначает владелец, не администратор.
     promote = admin.patch(f"{BASE}/people/employees/{worker['id']}", json={"role": "admin"})
     assert promote.status_code == 403
-    # Владелец сбрасывает администратора; себя — нет, это делает команда сервера.
+    # Владелец сбрасывает администратора; себя - нет, это делает команда сервера.
     assert owner.post(f"{BASE}/people/employees/{first['id']}/reset").status_code == 200
     own = owner.post(f"{BASE}/people/employees/{owner_card['id']}/reset")
     assert own.status_code == 403 and "командой на сервере" in own.json()["detail"]
@@ -594,7 +594,7 @@ def test_vremennyy_parol_otkryvaet_tolko_smenu_parolya(app: FastAPI) -> None:
         assert buh.get(f"{BASE}{path}").status_code == 403, path
     changed = buh.post(f"{BASE}/auth/password", json={"old_password": "temp-pass-1", "new_password": "own-pass-12"})
     assert changed.status_code == 200
-    # Прежняя роль «бухгалтер» — это личные права: журнал правит, счета не заводит.
+    # Прежняя роль «бухгалтер» - это личные права: журнал правит, счета не заводит.
     me = buh.get(f"{BASE}/auth/me").json()
     assert me["role"] == "employee" and me["access"]["journal"] == "edit"
     assert me["access"]["dictionaries"] == "view" and me["access"]["people"] == "none"
@@ -648,14 +648,14 @@ def test_vhod_do_otkrytiya_dostupa_ne_zastrevaet_na_parole(app: FastAPI) -> None
     owner = register(app)
     card = owner.post(f"{BASE}/people/employees", json={"full_name": "Асхат"}).json()
     person = client(app, "10.0.0.31")
-    # Номер ещё ничей — «пароль», как у любого незнакомого.
+    # Номер ещё ничей - «пароль», как у любого незнакомого.
     assert person.post(f"{BASE}/auth/phone/start", json={"phone": "+77474568661"}).json() == {"step": "password"}
     opened = owner.post(f"{BASE}/people/employees/{card['id']}/account", json={"phone": "+77474568661"})
     assert opened.status_code == 201, opened.text
     # Человек так и стоит на шаге «пароль»: ответ ведёт к «Придумайте пароль».
     stuck = person.post(f"{BASE}/auth/phone/login", json={"phone": "+77474568661", "password": "что-то"})
     assert stuck.status_code == 409 and stuck.json()["detail"] == auth.NEEDS_PASSWORD
-    # Задал пароль — и уже внутри, без третьего ввода.
+    # Задал пароль - и уже внутри, без третьего ввода.
     done = person.post(f"{BASE}/auth/phone/set-password", json={"phone": "+77474568661", "password": "secret-123"})
     assert done.status_code == 200, done.text
     assert done.json()["authenticated"] is True and done.json()["role"] == "employee"
@@ -671,7 +671,7 @@ def test_pervyy_shag_vhoda_schitaetsya_s_adresa(app: FastAPI) -> None:
         assert answer.status_code == 200, (index, answer.text)
     over = guest.post(f"{BASE}/auth/phone/start", json={"phone": "+77009999999"})
     assert over.status_code == 429
-    # Другой адрес — свой счёт.
+    # Другой адрес - свой счёт.
     assert client(app, "10.0.0.78").post(f"{BASE}/auth/phone/start", json={"phone": "+77009999999"}).status_code == 200
 
 
@@ -683,7 +683,7 @@ def test_nomer_zakrytoy_uchyotki_svoboden(app: FastAPI) -> None:
     second = owner.post(f"{BASE}/people/employees", json={"full_name": "Правильный Человек", "phone": "+77011230001"})
     assert second.status_code == 201, second.text
     assert second.json()["phone"] == "+77011230001"
-    # Номер действующего сотрудника — по-прежнему отказ, и правдивый.
+    # Номер действующего сотрудника - по-прежнему отказ, и правдивый.
     third = owner.post(f"{BASE}/people/employees", json={"full_name": "Третий", "phone": "+77011230001"})
     assert third.status_code == 400 and "другого сотрудника компании" in third.json()["detail"]
 
@@ -760,13 +760,13 @@ def test_nachalnik_otdela_vidit_i_menyaet_tolko_svoih(app: FastAPI) -> None:
     assert {item["id"] for item in listing["employees"]} == {head["id"], lawyer["id"]}
     assert [item["id"] for item in listing["departments"]] == [yuo]
 
-    # Чужой отдел — как несуществующий: ни карточки, ни прав, ни сеансов.
+    # Чужой отдел - как несуществующий: ни карточки, ни прав, ни сеансов.
     for path in (f"/people/employees/{other['id']}", f"/access/employee/{other['id']}", f"/access/department/{no}"):
         assert boss.get(f"{BASE}{path}").status_code == 404, path
     assert boss.post(f"{BASE}/people/employees/{other['id']}/reset").status_code == 403
     assert boss.patch(f"{BASE}/people/employees/{other['id']}", json={"job_title": "x"}).status_code == 403
 
-    # Новый сотрудник встаёт в отдел начальника сам; в чужой отдел — отказ.
+    # Новый сотрудник встаёт в отдел начальника сам; в чужой отдел - отказ.
     made = boss.post(f"{BASE}/people/employees", json={"full_name": "Новикова Нигора", "phone": "+77051110004"})
     assert made.status_code == 201, made.text
     assert made.json()["department_id"] == yuo and made.json()["status"] == "pending"
@@ -777,11 +777,11 @@ def test_nachalnik_otdela_vidit_i_menyaet_tolko_svoih(app: FastAPI) -> None:
     moved = boss.patch(f"{BASE}/people/employees/{lawyer['id']}", json={"department_id": no})
     assert moved.status_code == 403
 
-    # Отделы и права отдела — администратору.
+    # Отделы и права отдела - администратору.
     assert boss.post(f"{BASE}/people/departments", json={"code": "ХЗ"}).status_code == 403
     assert boss.put(f"{BASE}/access/department/{yuo}", json={"changes": {"journal": "view"}}).status_code == 403
 
-    # Права подчинённого — не выше своих.
+    # Права подчинённого - не выше своих.
     ok = boss.put(f"{BASE}/access/employee/{lawyer['id']}", json={"changes": {"contracts": "view"}})
     assert ok.status_code == 200, ok.text
     assert ok.json()["effective"]["contracts"] == "view"
@@ -801,7 +801,7 @@ def test_nachalnik_otdela_vidit_i_menyaet_tolko_svoih(app: FastAPI) -> None:
     assert own.status_code == 200, own.text
     assert own.json()["contracts_scope"]["rows"] == "own"
 
-    # Себе — нельзя; удалить подчинённого — можно, в корзину.
+    # Себе - нельзя; удалить подчинённого - можно, в корзину.
     assert boss.put(f"{BASE}/access/employee/{head['id']}", json={"changes": {"journal": "edit"}}).status_code == 403
     gone = boss.delete(f"{BASE}/people/employees/{lawyer['id']}")
     assert gone.status_code == 200 and gone.json()["archived"] is True
@@ -837,7 +837,7 @@ def test_ne_admin_razdayot_ne_vyshe_svoego(app: FastAPI) -> None:
     assert same.status_code == 200, same.text
 
 
-# ── Отдел — потолок (29.09.2026) ───────────────────────────────────────────
+# ── Отдел - потолок (29.09.2026) ───────────────────────────────────────────
 
 
 def test_otdel_potolok_lichnoe_tolko_suzhaet(app: FastAPI) -> None:
@@ -846,7 +846,7 @@ def test_otdel_potolok_lichnoe_tolko_suzhaet(app: FastAPI) -> None:
     card = employee(owner, "Потолкова Айжан", "+77061110001", yuo)
     grant(owner, "department", yuo, {"contracts": {"level": "view", "scope": {"rows": "department"}}})
 
-    # Выше отдела — урезается до отдела: и уровень, и область договоров.
+    # Выше отдела - урезается до отдела: и уровень, и область договоров.
     wide = grant(owner, "employee", card["id"], {
         "journal": "view",
         "contracts": {"level": "edit", "scope": {"rows": "all"}},
@@ -857,11 +857,11 @@ def test_otdel_potolok_lichnoe_tolko_suzhaet(app: FastAPI) -> None:
     person = activate(app, "+77061110001")
     assert person.get(f"{BASE}/operations").status_code == 403
 
-    # Уже отдела — действует: сужать можно.
+    # Уже отдела - действует: сужать можно.
     narrow = grant(owner, "employee", card["id"], {"contracts": {"level": "view", "scope": {"rows": "own"}}})
     assert narrow["effective"]["contracts"] == "view" and narrow["contracts_scope"]["rows"] == "own"
 
-    # Шире отдела — только пометкой администратора, только этому человеку.
+    # Шире отдела - только пометкой администратора, только этому человеку.
     beyond = grant(owner, "employee", card["id"], {"journal": {"level": "view", "scope": {"beyond": True}}})
     assert beyond["effective"]["journal"] == "view"
     assert beyond["grants"]["journal"]["scope"] == {"beyond": True}
@@ -871,7 +871,7 @@ def test_otdel_potolok_lichnoe_tolko_suzhaet(app: FastAPI) -> None:
         f"{BASE}/access/department/{yuo}", json={"changes": {"journal": {"level": "view", "scope": {"beyond": True}}}}
     )
     assert dept_beyond.status_code == 400
-    # Правка без пометки снимает её — снова под потолком.
+    # Правка без пометки снимает её - снова под потолком.
     again = grant(owner, "employee", card["id"], {"journal": "view"})
     assert again["effective"]["journal"] == "none" and "scope" not in again["grants"]["journal"]
 
@@ -904,7 +904,7 @@ def test_prosmotry_ne_chashe_raza_v_minutu_i_svoi_deystviya(app: FastAPI) -> Non
     assert person.post(f"{BASE}/audit/view", json={"section": "journal"}).status_code == 403
     assert person.post(f"{BASE}/audit/view", json={"section": "нечто"}).status_code == 422
 
-    # Без права «Журнал действий» — только своё, чужие фильтры не действуют.
+    # Без права «Журнал действий» - только своё, чужие фильтры не действуют.
     mine = person.get(f"{BASE}/audit", params={"user_id": str(uuid.uuid4())}).json()["items"]
     me = person.get(f"{BASE}/auth/me").json()["user"]["id"]
     assert mine and all(
@@ -948,7 +948,7 @@ def test_prosmotry_starshe_180_dney_uhodyat_ostalnoe_ostayotsya(app: FastAPI) ->
 
 
 def test_resolve_na_opros_stoit_edinits_zaprosov(app: FastAPI, finance_db) -> None:
-    """Опрос реестра раз в 2 с на каждой вкладке — resolve не должен расти.
+    """Опрос реестра раз в 2 с на каждой вкладке - resolve не должен расти.
 
     Владелец: один запрос (сеанс, учётка, компания, членство разом).
     Сотрудник: два (ещё запись сотрудника с обеими стопками прав).
@@ -957,7 +957,7 @@ def test_resolve_na_opros_stoit_edinits_zaprosov(app: FastAPI, finance_db) -> No
     yuo = department(owner, "ЮО")
     card = employee(owner, "Ким Алия", "+77072223355", yuo)
     grant(owner, "department", yuo, {"journal": "view", "contracts": "view"})
-    # Шире отдела — пометкой администратора: без неё потолок отдела срезал бы.
+    # Шире отдела - пометкой администратора: без неё потолок отдела срезал бы.
     grant(owner, "employee", card["id"], {"reports.debts": {"level": "view", "scope": {"beyond": True}}})
     person = activate(app, "+77072223355")
 
@@ -969,7 +969,7 @@ def test_resolve_na_opros_stoit_edinits_zaprosov(app: FastAPI, finance_db) -> No
     for who, expected in ((owner, 1), (person, 2)):
         token = who.cookies.get(auth.COOKIE_NAME)
         with finance_session() as session:
-            auth.resolve(session, token)  # первый — может обновить «был в сети»
+            auth.resolve(session, token)  # первый - может обновить «был в сети»
         statements.clear()
         sa.event.listen(finance_db, "before_cursor_execute", count)
         try:

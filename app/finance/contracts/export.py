@@ -1,9 +1,9 @@
-"""Выгрузка реестра в .xlsx — теми же листами, блоками и шапками, что в файле.
+"""Выгрузка реестра в .xlsx - теми же листами, блоками и шапками, что в файле.
 
-Страховка на переходный период и для тех, кому нужен файл. Лист выгрузки —
+Страховка на переходный период и для тех, кому нужен файл. Лист выгрузки -
 это отбор реестра: договор стоит в первом подходящем блоке листа, как стоял бы
-в Excel. Шапка блока — подписи колонок из файла (у «Заказчик ГК / Заказчик ГК»
-заказчик снова в F), текст соглашений — как был, даты — датами Excel, суммы —
+в Excel. Шапка блока - подписи колонок из файла (у «Заказчик ГК / Заказчик ГК»
+заказчик снова в F), текст соглашений - как был, даты - датами Excel, суммы -
 числами. Цвета шапки исходного файла возвращаются в выгрузке: на экране их нет,
 а в файле человек их ждёт.
 
@@ -12,8 +12,8 @@
 остальное прижималось к низу, ссылки Битрикса налезали на соседние колонки,
 формат «# ##0» показывал 1 200 000 как «1200 000», а «Оплачено/Остаток по
 выписке» выходили пустыми. Теперь: строки одной высоты, многострочное видно
-первой строкой (целиком — в ячейке), длинное обрезается краем ячейки, ширины —
-по содержимому, суммы — «#,##0», ссылки кликабельные, рамки, фильтр, печать
+первой строкой (целиком - в ячейке), длинное обрезается краем ячейки, ширины -
+по содержимому, суммы - «#,##0», ссылки кликабельные, рамки, фильтр, печать
 на ширину листа с шапкой на каждой странице.
 """
 from __future__ import annotations
@@ -56,11 +56,11 @@ DEFAULT_KEYS = (
     "remaining_snapshot", "amendments_text", "amendments_summary_text", "end_date", "note",
 )
 
-#: Высота строки договора и строки текста в пунктах (Calibri 11 — 15 pt).
+#: Высота строки договора и строки текста в пунктах (Calibri 11 - 15 pt).
 ROW_HEIGHT = 18.0
 LINE_HEIGHT = 15.0
 #: Шапка растёт по подписи, но не больше четырёх строк: длинная подпись из
-#: файла («Текущее состояние (действующий/ недействующий/ …)») целиком — в ячейке.
+#: файла («Текущее состояние (действующий/ недействующий/ …)») целиком - в ячейке.
 HEADER_LINES = 4
 HEAD_FILL = "F2F2F2"
 HEAD_LINE = "A6A6A6"
@@ -71,12 +71,12 @@ DATE_KEYS = ("signed_at", "planned_end_at", "end_date")
 MONEY_KEYS = (
     "amount", "paid_snapshot", "remaining_snapshot", "summary_paid", "summary_remaining", *LIVE_FIELDS,
 )
-#: «Доли исполнителей» — последней колонкой каждого блока, как в листе
+#: «Доли исполнителей» - последней колонкой каждого блока, как в листе
 #: (`sheet-adapter.ts`). В реестре такого поля нет: доли живут в договоре
-#: по людям, и видны — как на экране — только открытые этому человеку.
+#: по людям, и видны - как на экране - только открытые этому человеку.
 SHARES_KEY = "__shares"
 SHARES_LABEL = "Доли исполнителей"
-#: Ширина колонки без ширины из файла — по смыслу; по содержимому она
+#: Ширина колонки без ширины из файла - по смыслу; по содержимому она
 #: вырастет до потолка, но не сузится.
 KIND_WIDTH = {"index": 6.0, "date": 12.0, "money": 14.0, "link": 18.0, "text": 16.0, "shares": 30.0}
 KEY_WIDTH = {"customer": 30.0, "executor": 18.0, "subject": 26.0, "number": 16.0, "people": 18.0}
@@ -123,7 +123,7 @@ def _text(registry: Registry, contract: Contract, key: str, people: Sequence[uui
     if key in ("signed_at", "planned_end_at", "end_date"):
         return getattr(contract, key)
     if key in ("billing", "end_kind"):
-        # Выбор — словами, как на экране: «Расторжение», а не «terminated».
+        # Выбор - словами, как на экране: «Расторжение», а не «terminated».
         raw = getattr(contract, key) or None
         return dict(CHOICES[key]).get(raw, raw) if raw else None
     if key in ("number", "folder_url", "amendments_text", "amendments_summary_text", "note", "amount_terms", "currency"):
@@ -154,11 +154,11 @@ def _text(registry: Registry, contract: Contract, key: str, people: Sequence[uui
 
 
 def build(session: Session, workspace: Workspace, access: Access, actor: Actor, view_keys: Sequence[str] | None = None) -> bytes:
-    """Книга .xlsx: лист реестра — лист книги, блок — название, шапка и строки.
+    """Книга .xlsx: лист реестра - лист книги, блок - название, шапка и строки.
 
     Книга пишется потоком (`write_only`): строки уходят в файл по мере записи,
     а не копятся объектами ячеек. Обычная книга держала в памяти каждую ячейку
-    со стилем — выгрузка 20 000 договоров поднимала процесс на 380 МБ, и
+    со стилем - выгрузка 20 000 договоров поднимала процесс на 380 МБ, и
     память обратно не возвращалась. В потоковой книге ширины колонок и
     закрепление шапки задаются до первой строки: их знают заранее из листа.
     """
@@ -175,13 +175,13 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
     )
     people = people_of(session, [item.id for item in contracts])
     visible = [item for item in contracts if visible_to(item, registry, access, people.get(item.id, []))]
-    # Стороны всех выгружаемых договоров — одним запросом, а не по одному на
+    # Стороны всех выгружаемых договоров - одним запросом, а не по одному на
     # договор внутри facts_of.
     registry.parties_for({pid for item in visible for pid in (item.executor_id, item.customer_id)})
     facts = {item.id: facts_of(item, registry, people.get(item.id, [])) for item in visible}
     hidden = set(access.hidden)
-    # «Оплачено/Остаток по выписке» — тем же разнесением, что и на экране
-    # (`payments.summaries`): по всем договорам компании, показ — по видимым.
+    # «Оплачено/Остаток по выписке» - тем же разнесением, что и на экране
+    # (`payments.summaries`): по всем договорам компании, показ - по видимым.
     # Кому журнал не открыт, у того этих колонок нет (`access.hidden`).
     live: dict[uuid.UUID, dict[str, Any]] = {}
     if access.view and not hidden.intersection(LIVE_FIELDS):
@@ -192,11 +192,11 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
             )
             if summary is not None:
                 live[item.id] = summary
-    # Доли — тем же ответом, что у экрана: владельцу и администратору — все,
-    # начальнику — договоров отдела, сотруднику — только своя.
+    # Доли - тем же ответом, что у экрана: владельцу и администратору - все,
+    # начальнику - договоров отдела, сотруднику - только своя.
     shares = shares_module.all_visible(session, workspace, access)["contracts"]
 
-    # Без выбора — листы реестра; «Разовые» выгружаются своей кнопкой.
+    # Без выбора - листы реестра; «Разовые» выгружаются своей кнопкой.
     views: list[EntityView] = [
         view for view in registry.views if (view.key in view_keys if view_keys else not view.book)
     ]
@@ -208,7 +208,7 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
         sheet = book.create_sheet(title=title)
         styles = _Styles(sheet, (view.style or {}).get("header_fill") or HEAD_FILL)
         blocks = list(view.blocks or [])
-        # «Оплачено/Остаток по выписке» — там же, где на экране: за колонками
+        # «Оплачено/Остаток по выписке» - там же, где на экране: за колонками
         # оплат из файла (`with_live_columns`).
         layouts = [
             [
@@ -220,13 +220,13 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
             ]
             for block in blocks
         ]
-        # Договор — в одном блоке листа: в первом подходящем (`views.place`).
+        # Договор - в одном блоке листа: в первом подходящем (`views.place`).
         members: list[list[Contract]] = [[] for _ in blocks]
         for item in visible:
             index = views_module.place(view, facts[item.id])
             if index is not None and index < len(members):
                 members[index].append(item)
-        # Значения — заранее: ширины колонок потоковой книги задаются до
+        # Значения - заранее: ширины колонок потоковой книги задаются до
         # первой строки, а считаются по содержимому.
         values: list[list[list[Any]]] = []
         for number in range(len(blocks)):
@@ -342,9 +342,9 @@ def _sheet_title(title: str, taken: list[str]) -> str:
 def _shares_text(
     entry: dict[str, Any] | None, listed: Sequence[uuid.UUID], registry: Registry, total: Decimal | None
 ) -> str | None:
-    """Доли строкой ячейки — как в листе: «Елжас 500 000 (71,4%) · Рысбек
-    200 000 (28,6%)», в конце — что не распределено; сотруднику — «Ваша доля
-    …»; совместный договор без сумм — «Елжас · Рысбек — доли не указаны»."""
+    """Доли строкой ячейки - как в листе: «Елжас 500 000 (71,4%) · Рысбек
+    200 000 (28,6%)», в конце - что не распределено; сотруднику - «Ваша доля
+    …»; совместный договор без сумм - «Елжас · Рысбек - доли не указаны»."""
     if entry is None:
         return None
     people: dict[str, dict[str, str | None]] = entry.get("people") or {}
@@ -354,7 +354,7 @@ def _shares_text(
             found = registry.employees.get(uuid.UUID(employee))
         except ValueError:
             found = None
-        return found.full_name if found else "—"
+        return found.full_name if found else "-"
 
     def one(share: dict[str, str | None] | None) -> str:
         amount = _number((share or {}).get("amount"))
@@ -362,17 +362,17 @@ def _shares_text(
         pct = f"{percent:.1f}".rstrip("0").rstrip(".").replace(".", ",") + "%" if percent is not None else ""
         if amount is not None:
             return f"{_grouped(amount)} ({pct})" if pct else _grouped(amount)
-        return pct or "—"
+        return pct or "-"
 
     order = [str(item) for item in listed]
     if not people:
         if entry.get("scope") == "own":
             return "Ваша доля не указана"
-        return f"{' · '.join(name(item) for item in order)} — доли не указаны" if order else None
+        return f"{' · '.join(name(item) for item in order)} - доли не указаны" if order else None
     if entry.get("scope") == "own":
         return f"Ваша доля {one(next(iter(people.values())))}"
     ids = [*order, *(item for item in people if item not in order)]
-    parts = [f"{name(item)} {one(people.get(item)) if item in people else '—'}" for item in ids]
+    parts = [f"{name(item)} {one(people.get(item)) if item in people else '-'}" for item in ids]
     amounts = [_number(share.get("amount")) for share in people.values()]
     percents = [_number(share.get("percent")) for share in people.values()]
     if total is not None and all(value is not None for value in amounts):
@@ -387,7 +387,7 @@ def _shares_text(
 
 
 def _grouped(value: float) -> str:
-    """500000 → «500 000», 1234,5 → «1 234,5» — как в листе."""
+    """500000 → «500 000», 1234,5 → «1 234,5» - как в листе."""
     text = f"{value:,.2f}".rstrip("0").rstrip(".")
     return text.replace(",", " ").replace(".", ",")
 
@@ -422,7 +422,7 @@ def _number(raw: Any) -> float | None:
 
 
 def _shown(value: Any) -> str:
-    """Как значение будет видно в ячейке — для ширины колонки."""
+    """Как значение будет видно в ячейке - для ширины колонки."""
     if value is None:
         return ""
     if isinstance(value, date):
@@ -433,9 +433,9 @@ def _shown(value: Any) -> str:
 
 
 def _width(column: dict[str, Any], kind: str, label: str, values: list[Any]) -> float:
-    """Ширина: из файла или по смыслу, дальше — по содержимому до потолка.
+    """Ширина: из файла или по смыслу, дальше - по содержимому до потолка.
 
-    По содержимому — по 90-й доле длин, а не по самой длинной: одна длинная
+    По содержимому - по 90-й доле длин, а не по самой длинной: одна длинная
     ячейка не должна раздувать колонку на всю выгрузку. Подпись шапки не
     рвётся посреди слова: колонка не уже самого длинного слова подписи.
     """
@@ -446,7 +446,7 @@ def _width(column: dict[str, Any], kind: str, label: str, values: list[Any]) -> 
         fit = lengths[min(len(lengths) - 1, int(len(lengths) * 0.9))] * 1.1 + 2
     word = max((len(part) for part in label.split()), default=0) * 1.15 + 2
     width = max(base, min(WIDTH_CAP[kind], max(fit, word)))
-    # Подпись шапки — не больше `HEADER_LINES` строк: длинную подпись из
+    # Подпись шапки - не больше `HEADER_LINES` строк: длинную подпись из
     # файла колонка вмещает, расширяясь (до 34), а не обрезает сверху и снизу.
     while width < 34 and _lines(label, width, bold=True) > HEADER_LINES:
         width += 1
@@ -476,7 +476,7 @@ class _Styles:
     """Готовые стили ячеек потоковой книги.
 
     Стиль собирается один раз на сочетание и копируется в ячейку: присваивать
-    каждой из сотен тысяч ячеек шрифт, рамку и выравнивание заново — это
+    каждой из сотен тысяч ячеек шрифт, рамку и выравнивание заново - это
     поиск в таблице стилей книги на каждое присваивание.
     """
 
@@ -498,11 +498,11 @@ class _Styles:
             },
             "empty": {"border": grid},
             "text": {"border": grid, "alignment": Alignment(vertical="center")},
-            # Длиннее колонки: «заполнить» — Excel обрезает текст краем
+            # Длиннее колонки: «заполнить» - Excel обрезает текст краем
             # ячейки, а не выводит его поверх соседних пустых.
             "clip": {"border": grid, "alignment": Alignment(horizontal="fill", vertical="center")},
-            # Несколько строк: видна первая, остальное — в ячейке. Перенос
-            # включён, но высота строки своя — Excel её не растягивает.
+            # Несколько строк: видна первая, остальное - в ячейке. Перенос
+            # включён, но высота строки своя - Excel её не растягивает.
             "lines": {"border": grid, "alignment": Alignment(vertical="top", wrap_text=True)},
             "link": {"border": grid, "font": link, "alignment": Alignment(horizontal="fill", vertical="center")},
             "link_short": {"border": grid, "font": link, "alignment": Alignment(vertical="center")},
@@ -561,7 +561,7 @@ class _Styles:
 
 
 def _target(url: str) -> str:
-    """Адрес ссылки для Excel: кириллица и пробелы — percent-кодом, иначе
+    """Адрес ссылки для Excel: кириллица и пробелы - percent-кодом, иначе
     Excel при открытии просит «восстановить содержимое»."""
     return quote(url, safe=":/?#[]@!$&'()*+,;=%~-._")
 

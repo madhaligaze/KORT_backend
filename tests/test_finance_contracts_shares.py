@@ -2,14 +2,14 @@
 
 Набор держит то, что было обещано владельцу:
 
-* сотрудник видит только свою долю — чужих сумм нет в ответе вовсе;
+* сотрудник видит только свою долю - чужих сумм нет в ответе вовсе;
   начальник отдела, администратор и владелец видят и правят все;
 * людей в договоре сколько угодно, доли не больше суммы договора и 100%;
 * правка поля «Ответственное лицо» не стирает доли оставшихся;
-* доли отделов — только администратору и начальнику с полным правом;
+* доли отделов - только администратору и начальнику с полным правом;
 * «История» договора не приносит чужие суммы;
 * ломающее изменение листа ставит точку восстановления, и её возвращает
-  автор или администратор — не трогая то, что после поменяли коллеги.
+  автор или администратор - не трогая то, что после поменяли коллеги.
 """
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def test_dolyu_vidit_kazhdyy_svoyu_nachalnik_i_vladelets_vse(app: FastAPI) -> No
     assert full["summary"]["allocated_amount"] == "700000.00" and full["summary"]["rest_amount"] == "0.00"
     assert full["summary"]["over"] is False
 
-    # Юрист — только своя доля: чужих строк в ответе нет вовсе.
+    # Юрист - только своя доля: чужих строк в ответе нет вовсе.
     mine = _shares(team["first"], contract)["people"]
     assert mine["scope"] == "own" and mine["can_edit"] is False and mine["count"] == 3
     assert len(mine["rows"]) == 1 and mine["rows"][0]["mine"] is True
@@ -112,12 +112,12 @@ def test_dolyu_vidit_kazhdyy_svoyu_nachalnik_i_vladelets_vse(app: FastAPI) -> No
     assert "summary" not in mine
     assert _put(team["first"], contract, "amount", [(ids["first"], "700000")]).status_code == 403
 
-    # Начальник отдела — все доли своего отдела, и правит их.
+    # Начальник отдела - все доли своего отдела, и правит их.
     boss = _shares(team["head"], contract)["people"]
     assert boss["scope"] == "all" and boss["can_edit"] is True and len(boss["rows"]) == 3
     assert _put(team["head"], contract, "percent", [(ids["first"], "60"), (ids["second"], "40")]).status_code == 200
 
-    # Человек другого отдела с правом на все договоры — ни одной доли.
+    # Человек другого отдела с правом на все договоры - ни одной доли.
     stranger = _shares(team["other"], contract)
     assert stranger["people"]["scope"] == "none" and stranger["people"]["rows"] == []
     assert stranger["departments"] is None
@@ -140,7 +140,7 @@ def test_doli_ne_bolshe_summy_i_sta_protsentov(app: FastAPI) -> None:
     assert negative.status_code == 400
     stranger = _put(owner, contract, "amount", [(ids["other"], "5")])
     assert stranger.status_code == 400 and "ответственного" in stranger.json()["detail"]
-    # Не всё распределено — это не ошибка, а остаток.
+    # Не всё распределено - это не ошибка, а остаток.
     part = _put(owner, contract, "amount", [(ids["first"], "500000")])
     assert part.status_code == 200
     assert part.json()["people"]["summary"]["rest_amount"] == "200000.00"
@@ -151,7 +151,7 @@ def test_pravka_otvetstvennyh_ne_stiraet_doli(app: FastAPI) -> None:
     owner = team["owner"]
     contract = _contract(owner, "ЮО/702")
     assert _put(owner, contract, "amount", [(ids["first"], "400000"), (ids["second"], "300000")]).status_code == 200
-    # Третьего убрали, первого и второго поменяли местами — доли остались у людей.
+    # Третьего убрали, первого и второго поменяли местами - доли остались у людей.
     patched = owner.patch(
         f"{BASE}/contracts/{contract}", json={"values": {"people": "Юристов Тимур, Юристов Рысбек"}}
     )
@@ -173,7 +173,7 @@ def test_istoriya_ne_nesyot_chuzhie_summy(app: FastAPI) -> None:
     assert "contract.shares.people" in kinds(owner)
     assert "contract.shares.people" in kinds(team["head"])
     assert "contract.shares.people" not in kinds(team["first"])
-    # Заголовок события — без сумм: его видят в журнале действий.
+    # Заголовок события - без сумм: его видят в журнале действий.
     item = next(i for i in owner.get(f"{BASE}/contracts/{contract}/history").json()["items"] if i["kind"] == "contract.shares.people")
     assert "500" not in item["title"] and "задано у 2 из 3" in item["title"]
 
@@ -193,8 +193,8 @@ def test_svodka_dolej_otdaet_tolko_otkrytoe(app: FastAPI) -> None:
 
 def test_sovmestnyy_dogovor_bez_summ_v_otbore_s_dolyami(app: FastAPI) -> None:
     """30.09: на проде долей не ввели ни в одном договоре, и «С долями» у
-    владельца был пуст, хотя совместных договоров шесть. Совместный — в
-    ответе и без сумм; каждому — в своих пределах."""
+    владельца был пуст, хотя совместных договоров шесть. Совместный - в
+    ответе и без сумм; каждому - в своих пределах."""
     team, ids, _yuo, _no = _team(app)
     owner = team["owner"]
     together = _contract(owner, "ЮО/720", people="Юристов Рысбек, Юристов Тимур")
@@ -203,11 +203,11 @@ def test_sovmestnyy_dogovor_bez_summ_v_otbore_s_dolyami(app: FastAPI) -> None:
     assert everything == {together: {"scope": "all", "people": {}}}
     head = team["head"].get(f"{BASE}/contracts/shares").json()["contracts"]
     assert head == {together: {"scope": "all", "people": {}}}
-    # Исполнитель — свой договор, чужих сумм нет; посторонний — ничего.
+    # Исполнитель - свой договор, чужих сумм нет; посторонний - ничего.
     first = team["first"].get(f"{BASE}/contracts/shares").json()["contracts"]
     assert first == {together: {"scope": "own", "people": {}}}
     assert team["other"].get(f"{BASE}/contracts/shares").json()["contracts"] == {}
-    # Доля у одного — у второго исполнителя по-прежнему только своя.
+    # Доля у одного - у второго исполнителя по-прежнему только своя.
     _put(owner, together, "amount", [(ids["first"], "400000")])
     second = team["second"].get(f"{BASE}/contracts/shares").json()["contracts"]
     assert second == {together: {"scope": "own", "people": {}}}
@@ -218,7 +218,7 @@ def test_sovmestnyy_dogovor_bez_summ_v_otbore_s_dolyami(app: FastAPI) -> None:
 
 def test_doli_v_vygruzke_excel_po_pravam(app: FastAPI) -> None:
     """30.09: в скачанном .xlsx колонки «Доли исполнителей» не было вовсе.
-    Теперь — последней, как в листе, и видно в ней то же, что на экране."""
+    Теперь - последней, как в листе, и видно в ней то же, что на экране."""
     import io
 
     from openpyxl import load_workbook
@@ -241,7 +241,7 @@ def test_doli_v_vygruzke_excel_po_pravam(app: FastAPI) -> None:
 
     everything = column(owner)
     assert everything["ЮО/730"] == "Юристов Рысбек 500 000 (71,4%) · Юристов Тимур 150 000 (21,4%) · не распределено 50 000"
-    assert everything["ЮО/731"] == "Юристов Рысбек · Юристов Тимур — доли не указаны"
+    assert everything["ЮО/731"] == "Юристов Рысбек · Юристов Тимур - доли не указаны"
     first = column(team["first"])
     assert first["ЮО/730"] == "Ваша доля 500 000 (71,4%)" and first["ЮО/731"] == "Ваша доля не указана"
     assert "150 000" not in str(first)
@@ -256,14 +256,14 @@ def test_doli_otdelov_tolko_nachalniku_s_polnym_pravom(app: FastAPI) -> None:
     assert done.status_code == 200, done.text
     rows = done.json()["departments"]["rows"]
     assert [(row["code"], row["amount"]) for row in rows] == [("ЮО", "490000.00"), ("НО", "210000.00")]
-    # Отделы долей — это и поле «Отдел»: было «ЮО», стало «ЮО, НО».
+    # Отделы долей - это и поле «Отдел»: было «ЮО», стало «ЮО, НО».
     assert owner.get(f"{BASE}/contracts/{contract}").json()["contract"]["values"]["department"] == [yuo, no]
     # Начальник ЮО видит доли отделов договора, где стоит ЮО (по умолчанию видит,
     # 30.09.2026), но без «включено всё» в договорах не правит их.
     seen = _shares(team["head"], contract)["departments"]
     assert seen is not None and [row["code"] for row in seen["rows"]] == ["ЮО", "НО"] and seen["can_edit"] is False
     assert _put(team["head"], contract, "percent", [(yuo, "70"), (no, "30")], kind="departments").status_code == 403
-    # Администратор снял «видит доли отделов» — у начальника их нет; вернул — снова видит.
+    # Администратор снял «видит доли отделов» - у начальника их нет; вернул - снова видит.
     hide = {"people": {"level": "edit", "scope": {"rows": "department", "shares": False}}}
     grant(owner, "employee", ids["head"], hide)
     assert _shares(team["head"], contract)["departments"] is None
@@ -271,24 +271,24 @@ def test_doli_otdelov_tolko_nachalniku_s_polnym_pravom(app: FastAPI) -> None:
     assert ids["head"] in page["heads"] and page["heads_without_shares"] == [ids["head"]]
     grant(owner, "employee", ids["head"], {"people": {"level": "edit", "scope": {"rows": "department"}}})
     assert _shares(team["head"], contract)["departments"] is not None
-    # Дали всё — открылась и правка.
+    # Дали всё - открылась и правка.
     grant(owner, "employee", ids["head"], {"contracts": {"level": "edit", "scope": {"rows": "all", "beyond": True}}})
     assert _shares(team["head"], contract)["departments"]["can_edit"] is True
-    # Не начальник с тем же правом — нет.
+    # Не начальник с тем же правом - нет.
     grant(owner, "employee", ids["first"], {"contracts": {"level": "edit", "scope": {"rows": "all", "beyond": True}}})
     assert _shares(team["first"], contract)["departments"] is None
-    # Отдел, названный дважды, и больше 100% — отказ.
+    # Отдел, названный дважды, и больше 100% - отказ.
     twice = _put(owner, contract, "percent", [(yuo, "50"), (yuo, "20")], kind="departments")
     assert twice.status_code == 400
     # Начальник с полным правом доли правит, но отдел из договора не убирает.
     gone = _put(team["head"], contract, "percent", [(yuo, "100")], kind="departments")
     assert gone.status_code == 403 and "Отдел НО в договор вписали не вы" in gone.json()["detail"]
-    # Пустой список — отделов в договоре нет.
+    # Пустой список - отделов в договоре нет.
     cleared = _put(owner, contract, "amount", [], kind="departments")
     assert cleared.status_code == 200 and cleared.json()["departments"]["rows"] == []
 
 
-# ── «Отдел» — список, общий с долями отделов (30.09.2026) ────────────────────
+# ── «Отдел» - список, общий с долями отделов (30.09.2026) ────────────────────
 
 
 def _one(who: TestClient, contract_id: str):
@@ -300,7 +300,7 @@ def _edit(who: TestClient, contract_id: str, **values):
 
 
 def test_otdel_spiskom_kak_otvetstvennye(app: FastAPI) -> None:
-    """«ОБО, НО, ЮО, HR» у договора «4 в 1» — четыре отдела, а не «нет в списке»."""
+    """«ОБО, НО, ЮО, HR» у договора «4 в 1» - четыре отдела, а не «нет в списке»."""
     team, _ids, yuo, no = _team(app)
     owner = team["owner"]
     hr = department(owner, "HR")
@@ -309,10 +309,10 @@ def test_otdel_spiskom_kak_otvetstvennye(app: FastAPI) -> None:
     body = _one(owner, contract).json()["contract"]
     assert body["values"]["department"] == [no, yuo]
     assert not [issue for issue in body["issues"] if issue["code"] == "unread_department"]
-    # Незнакомая часть закрытого списка — отказ с её написанием, без угадывания.
+    # Незнакомая часть закрытого списка - отказ с её написанием, без угадывания.
     wrong = _edit(owner, contract, department="ЮО, ЮОО")
     assert wrong.status_code == 400 and "ЮОО" in wrong.json()["detail"]
-    # Доли разнесены — поле то же, в том же порядке.
+    # Доли разнесены - поле то же, в том же порядке.
     assert _put(owner, contract, "percent", [(no, "30"), (yuo, "70")], kind="departments").status_code == 200
     # Юрист дописывает отдел в поле: у долей новая строка, прежние доли на месте,
     # а у договора помечено, кто этот отдел вписал.
@@ -324,14 +324,14 @@ def test_otdel_spiskom_kak_otvetstvennye(app: FastAPI) -> None:
     assert added.json()["contract"]["departments_by"].get(hr) == lawyer_id
     rows = {row["code"]: row["percent"] for row in _shares(owner, contract)["departments"]["rows"]}
     assert rows == {"НО": "30", "ЮО": "70", "HR": None}
-    # Вписанное не им — не убрать и не заменить: только администратор или владелец.
+    # Вписанное не им - не убрать и не заменить: только администратор или владелец.
     removed = _edit(lawyer, contract, department="ЮО, HR")
     assert removed.status_code == 403 and "Отдел НО в договор вписали не вы" in removed.json()["detail"]
     # Свою ошибку, пока у отдела нет доли, юрист исправляет сам (владелец, 30.09.2026).
     fixed = _edit(lawyer, contract, department="НО, ЮО, ЮО")
     assert fixed.status_code == 200, fixed.text
     assert fixed.json()["contract"]["values"]["department"] == [no, yuo]
-    # Вписал снова, а владелец уже дал отделу долю — убрать HR юрист больше не может.
+    # Вписал снова, а владелец уже дал отделу долю - убрать HR юрист больше не может.
     assert _edit(lawyer, contract, department="НО, ЮО, HR").status_code == 200
     assert _put(owner, contract, "percent", [(no, "30"), (yuo, "50"), (hr, "20")], kind="departments").status_code == 200
     shared = _edit(lawyer, contract, department="НО, ЮО")
@@ -341,13 +341,13 @@ def test_otdel_spiskom_kak_otvetstvennye(app: FastAPI) -> None:
     assert by_owner.status_code == 200 and by_owner.json()["contract"]["values"]["department"] == [no, yuo]
     rows = {row["code"]: row["percent"] for row in _shares(owner, contract)["departments"]["rows"]}
     assert rows == {"НО": "30", "ЮО": "50"}
-    # В «Истории» — словами, списком.
+    # В «Истории» - словами, списком.
     titles = [item["title"] for item in owner.get(f"{BASE}/contracts/{contract}/history").json()["items"]]
     assert any("отдел: НО, ЮО, HR → НО, ЮО" in title for title in titles), titles
 
 
 def test_dogovor_vidyat_vse_otdely_spiska(app: FastAPI) -> None:
-    """Договор «НО, ЮО» — договор и НО, и ЮО: юрист «своего отдела» его видит и правит."""
+    """Договор «НО, ЮО» - договор и НО, и ЮО: юрист «своего отдела» его видит и правит."""
     team, _ids, _yuo, _no = _team(app)
     owner = team["owner"]
     lawyer = team["first"]
@@ -362,7 +362,7 @@ def test_dogovor_vidyat_vse_otdely_spiska(app: FastAPI) -> None:
 
 
 def test_nachalnik_vidit_vse_dogovory_otdela(app: FastAPI) -> None:
-    """Начальник видит договоры, где стоит его отдел, даже при области «где ответственный» — на чтение."""
+    """Начальник видит договоры, где стоит его отдел, даже при области «где ответственный» - на чтение."""
     team, ids, _yuo, _no = _team(app)
     owner = team["owner"]
     for who in ("head", "second"):
@@ -378,7 +378,7 @@ def test_nachalnik_vidit_vse_dogovory_otdela(app: FastAPI) -> None:
     assert _one(head, foreign).status_code == 404
     refused = _edit(head, single, note="правка начальника")
     assert refused.status_code == 400 and "только на просмотр" in refused.json()["detail"]
-    # Обычный юрист с той же областью — только свои.
+    # Обычный юрист с той же областью - только свои.
     assert _one(team["second"], single).status_code == 404
     # Администратор и владелец видят и правят всё, как прежде.
     assert _edit(owner, foreign, note="владелец").status_code == 200
@@ -401,7 +401,7 @@ def test_udalenie_iz_lista_vozvrashchaet_avtor(app: FastAPI) -> None:
     assert sorted(done.json()["done"]) == sorted([one, two]) and done.json()["point"]["kind"] == "contracts_delete"
     point = done.json()["point"]["id"]
     assert owner.get(f"{BASE}/contracts/{one}").status_code == 404
-    # Точку видит автор и администратор, коллега — нет.
+    # Точку видит автор и администратор, коллега - нет.
     assert [item["id"] for item in lawyer.get(f"{BASE}/contracts/restore-points").json()["items"]] == [point]
     assert team["second"].get(f"{BASE}/contracts/restore-points").json()["items"] == []
     assert team["second"].post(f"{BASE}/contracts/restore-points/{point}/restore").status_code == 403
@@ -447,7 +447,7 @@ def test_kolonka_iz_lista_i_vozvrat(app: FastAPI) -> None:
     assert keys[0] == "row_number" and keys[keys.index("number") + 1] == key
     # Юристу колонки не открыты.
     assert _change(team["first"], action="add_column", view="main", title="Своё").status_code == 403
-    # Переименовали шапку, убрали колонку — и вернули по точкам в обратном порядке.
+    # Переименовали шапку, убрали колонку - и вернули по точкам в обратном порядке.
     renamed = _change(owner, action="rename_column", view="main", block=0, key="number", label="Номер")
     assert renamed.status_code == 200, renamed.text
     removed = _change(owner, action="remove_column", view="main", keys=["note"])
@@ -504,12 +504,12 @@ def test_vstavlennaya_stroka_vstaet_pered_sosedom(app: FastAPI) -> None:
 
 
 def test_istoriya_pishet_vybor_slovami_a_ne_klyuchom(app: FastAPI) -> None:
-    """30.09: в журнал уходило «смысл даты окончания: — → terminated»."""
+    """30.09: в журнал уходило «смысл даты окончания: - → terminated»."""
     team, _, _, _ = _team(app)
     owner = team["owner"]
     contract = _contract(owner, "ЮО/830")
     response = owner.patch(f"{BASE}/contracts/{contract}", json={"values": {"end_kind": "terminated"}})
     assert response.status_code == 200, response.text
     titles = [item["title"] for item in owner.get(f"{BASE}/contracts/{contract}/history").json()["items"]]
-    assert any("— → Расторжение" in title for title in titles), titles
+    assert any("- → Расторжение" in title for title in titles), titles
     assert not any("terminated" in title for title in titles), titles

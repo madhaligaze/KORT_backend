@@ -1,16 +1,16 @@
 """Регистрация, вход и сессии раздела «Финансы».
 
-Своя авторизация, а не общая с дашбордом — почему, объяснено в
+Своя авторизация, а не общая с дашбордом - почему, объяснено в
 `accounts_model.py`. Здесь механика.
 
 Что сделано так же, как в дашборде, и это осознанно
 ───────────────────────────────────────────────────
-* пароли — argon2id, открытый текст в базу не попадает никогда;
+* пароли - argon2id, открытый текст в базу не попадает никогда;
 * сессии серверные: в cookie уходит случайный токен, в базе лежит его SHA-256,
   поэтому дамп базы не даёт работающих сессий;
-* логин (почта) нечувствителен к регистру и обрамляющим пробелам, пароль —
+* логин (почта) нечувствителен к регистру и обрамляющим пробелам, пароль -
   чувствителен;
-* ограничение перебора: пять неудачных попыток на почту подряд — минута
+* ограничение перебора: пять неудачных попыток на почту подряд - минута
   ожидания. Счётчик в памяти процесса, не в базе: защита от подбора не должна
   писать в базу на каждый неверный пароль.
 
@@ -18,7 +18,7 @@
 ─────────────────
 **Регистрация открыта.** В дашборде первого админа заводят переменными
 окружения, и это правильно для одной компании. Здесь компания регистрируется
-сама: почта, пароль, название компании — и человек сразу владелец своей
+сама: почта, пароль, название компании - и человек сразу владелец своей
 компании со своими счетами.
 
 **Компания выбирается в сессии.** Один человек ведёт несколько компаний;
@@ -29,10 +29,10 @@
 Два шага: номер → «пароль» или «задайте пароль». Незнакомый номер получает
 «пароль», как и знакомый: вход не выдаёт, кто зарегистрирован. Задать пароль
 можно только в окне ожидания (72 часа от заведения или сброса); кода и SMS
-нет — это выбор пользователя, и смягчён он окном, уведомлением
+нет - это выбор пользователя, и смягчён он окном, уведомлением
 администратору с устройством и адресом и сбросом, который обрывает всё.
 
-Перебор режется по номеру (пять неудач — десять минут ожидания) и по адресу;
+Перебор режется по номеру (пять неудач - десять минут ожидания) и по адресу;
 пятая неудача подряд уходит администраторам уведомлением «возможный
 перебор». «Забыл пароль» отвечает одинаково всегда и просит не чаще раза в
 десять минут на номер.
@@ -41,7 +41,7 @@
 ──────────────────────────
 Учётка, которая ждёт пароль или заблокирована, не открывает ни одного
 маршрута: `resolve()` для неё возвращает `None`, как для чужого токена.
-Проверка одна и стоит здесь, а не в каждом маршруте, — урок дашборда BBC,
+Проверка одна и стоит здесь, а не в каждом маршруте, - урок дашборда BBC,
 где такой флаг проверяли по месту и однажды забыли.
 """
 from __future__ import annotations
@@ -84,7 +84,7 @@ PENDING_WINDOW = timedelta(hours=72)
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
 _NOT_DIGIT = re.compile(r"\D+")
 
-#: Роли, которые можно выдать приглашением. `accountant`/`viewer` — прежние
+#: Роли, которые можно выдать приглашением. `accountant`/`viewer` - прежние
 #: названия: принимаются, чтобы старый экран «Команда» не сломался, и
 #: превращаются в сотрудника с личными правами прежней роли.
 INVITE_ROLES = ("admin", "employee", "accountant", "viewer")
@@ -94,7 +94,7 @@ WRONG_PHONE_OR_PASSWORD = "Неверный номер или пароль"
 TOO_MANY_PHONE = "Слишком много попыток. Попробуйте через 10 минут."
 WINDOW_EXPIRED = "Время задать пароль прошло. Попросите администратора открыть его снова."
 NO_PENDING = "Задать пароль по этому номеру нельзя. Войдите с паролем или попросите администратора открыть вход."
-NEEDS_PASSWORD = "Пароль ещё не задан — придумайте его"
+NEEDS_PASSWORD = "Пароль ещё не задан - придумайте его"
 
 
 class AuthError(Exception):
@@ -102,7 +102,7 @@ class AuthError(Exception):
 
 
 class TooManyAttempts(AuthError):
-    """Перебор: отвечаем 429, а не 401 — это не «неверный пароль»."""
+    """Перебор: отвечаем 429, а не 401 - это не «неверный пароль»."""
 
 
 class NeedsPassword(AuthError):
@@ -110,7 +110,7 @@ class NeedsPassword(AuthError):
     «Придумайте пароль», а не отвечать «неверный пароль» на пароль, которого нет.
 
     Бывает, когда номер ввели раньше, чем администратор открыл вход, или после
-    сброса — экран так и стоит на шаге «пароль». Тайны тут нет: то же самое
+    сброса - экран так и стоит на шаге «пароль». Тайны тут нет: то же самое
     `phone_start` говорит любому, кто введёт номер.
     """
 
@@ -134,7 +134,7 @@ class Member:
     session_id: uuid.UUID
     phone: str = ""
     rights: Rights = field(default_factory=Rights)
-    #: Откуда запрос — для журнала действий; ставит зависимость маршрута.
+    #: Откуда запрос - для журнала действий; ставит зависимость маршрута.
     ip: str = ""
     user_agent: str = ""
 
@@ -144,7 +144,7 @@ class Member:
 
     @property
     def login(self) -> str:
-        """Чем человек входит — почта или телефон. Подпись под записями."""
+        """Чем человек входит - почта или телефон. Подпись под записями."""
         return self.email or self.phone
 
     @property
@@ -158,10 +158,10 @@ _ATTEMPTS: dict[str, list[float]] = {}
 _ATTEMPTS_LOCK = threading.Lock()
 _MAX_ATTEMPTS = 5
 _WINDOW = 60.0
-#: Вход по номеру ждёт дольше: «Попробуйте через 10 минут» — это обещание
+#: Вход по номеру ждёт дольше: «Попробуйте через 10 минут» - это обещание
 #: экрана, и счётчик обязан его держать.
 PHONE_WINDOW = 600.0
-#: Неудач с одного адреса за окно — перебор многих номеров с одной машины.
+#: Неудач с одного адреса за окно - перебор многих номеров с одной машины.
 IP_LIMIT = 30
 #: Первых шагов входа по номеру с одного адреса за окно. Считается каждый
 #: шаг, а не неудача: ответ «задайте пароль» сам по себе находка для того, кто
@@ -169,7 +169,7 @@ IP_LIMIT = 30
 #: человека, так что шестьдесят за десять минут живому входу не мешают.
 START_LIMIT = 60
 #: С какого размера словаря выбрасывать остывшие ключи. Перебор по списку
-#: адресов — это новый ключ на каждую попытку, и назад его никто не спросит.
+#: адресов - это новый ключ на каждую попытку, и назад его никто не спросит.
 _SWEEP_AT = 1024
 
 
@@ -240,14 +240,14 @@ def normalize_email(email: str | None) -> str:
 def normalize_phone(raw: str | None) -> str:
     """`+7 (701) 123-45-67`, `87011234567`, `7011234567` → `+77011234567`.
 
-    Казахстанский мобильный: `+7` и десять цифр, первая из них — 7. Не номер —
+    Казахстанский мобильный: `+7` и десять цифр, первая из них - 7. Не номер -
     отказ с текстом, который фронт покажет под полем.
     """
     digits = _NOT_DIGIT.sub("", raw or "")
     if len(digits) == 11 and digits[0] in "78":
         digits = digits[1:]
     if len(digits) != 10:
-        raise AuthError("Номер — десять цифр после +7")
+        raise AuthError("Номер - десять цифр после +7")
     if digits[0] != "7":
         raise AuthError("Номер мобильного в Казахстане начинается с +7 7")
     return "+7" + digits
@@ -293,7 +293,7 @@ def _event(
 
     history.write(
         session,
-        None,  # type: ignore[arg-type] — компания задана идентификатором
+        None,  # type: ignore[arg-type] - компания задана идентификатором
         workspace_id=workspace_id,
         kind=kind,
         entity=entity,
@@ -334,7 +334,7 @@ def register(
 ) -> tuple[Member, str]:
     """Новая компания с её владельцем. Возвращает снимок и токен сессии.
 
-    Начальные справочники компании заводит `service.create_workspace` — тот же
+    Начальные справочники компании заводит `service.create_workspace` - тот же
     код, что раньше создавал единственное пространство: пустая компания без
     счетов не даёт сделать ни одного действия.
     """
@@ -353,7 +353,7 @@ def register(
         sa.select(FinanceUser).where(FinanceUser.email_normalized == clean_email)
     )
     if exists is not None:
-        raise AuthError("Такая почта уже зарегистрирована — войдите или смените пароль")
+        raise AuthError("Такая почта уже зарегистрирована - войдите или смените пароль")
 
     user = FinanceUser(
         email=(email or "").strip(),
@@ -382,7 +382,7 @@ def register(
     )
     log.info("finance: зарегистрирована компания «%s»", title)
     member = resolve(session, token)
-    if member is None:  # pragma: no cover — сессия только что создана
+    if member is None:  # pragma: no cover - сессия только что создана
         raise AuthError("Не удалось открыть сессию")
     return member, token
 
@@ -408,7 +408,7 @@ def _failure(
         _event(
             session, membership.workspace_id, "auth.login_failed",
             title=f"неверный пароль · {login_text} · {count}-й подряд" if count > 1 else f"неверный пароль · {login_text}",
-            # Автор неизвестен: пароль вводил кто угодно. Учётка — предмет записи.
+            # Автор неизвестен: пароль вводил кто угодно. Учётка - предмет записи.
             user_id=None, ip=ip, user_agent=user_agent, actor="", entity_id=user.id,
             after={"count": count},
         )
@@ -423,7 +423,7 @@ def _failure(
 def _pick_membership(session: Session, user: FinanceUser) -> FinanceMembership | None:
     """Компания для новой сессии: первая, где вход не закрыт.
 
-    Все членства закрыты — вход закрыт целиком: человек без компании увидел бы
+    Все членства закрыты - вход закрыт целиком: человек без компании увидел бы
     экран выбора, а выбрать там нечего.
     """
     memberships = _memberships(session, user.id)
@@ -459,7 +459,7 @@ def _success(
             actor=user.email or user.phone or "", entity_id=user.id,
         )
     member = resolve(session, token, ip=ip, user_agent=user_agent)
-    if member is None:  # pragma: no cover — сессия только что создана
+    if member is None:  # pragma: no cover - сессия только что создана
         raise AuthError("Не удалось открыть сессию")
     return member, token
 
@@ -488,15 +488,15 @@ def login(
 def phone_start(session: Session, *, phone: str, ip: str = "") -> str:
     """Первый шаг входа по номеру: `password` или `set_password`.
 
-    Незнакомый номер — `password`, как и знакомый: иначе по ответу перебором
+    Незнакомый номер - `password`, как и знакомый: иначе по ответу перебором
     собирался бы список сотрудников. `set_password` видит только учётка,
-    ждущая пароль, — ей этот шаг и нужен.
+    ждущая пароль, - ей этот шаг и нужен.
     """
     clean = normalize_phone(phone)
     if ip and (_too_many_attempts(f"ip:{ip}", IP_LIMIT) or _too_many_attempts(f"start:{ip}", START_LIMIT)):
         raise TooManyAttempts(TOO_MANY_PHONE)
     # Каждый шаг в счёт: без этого перебор номеров в поисках «задайте пароль»
-    # не упирался ни во что — неудачей первый шаг не бывает никогда.
+    # не упирался ни во что - неудачей первый шаг не бывает никогда.
     if ip:
         _note_failure(f"start:{ip}")
     user = session.scalar(sa.select(FinanceUser).where(FinanceUser.phone == clean))
@@ -514,7 +514,7 @@ def phone_login(
         raise TooManyAttempts(TOO_MANY_PHONE)
     user = session.scalar(sa.select(FinanceUser).where(FinanceUser.phone == clean))
     if user is not None and user.status == "pending":
-        # Пароля у учётки нет вовсе — «неверный пароль» тут ложь, из-за которой
+        # Пароля у учётки нет вовсе - «неверный пароль» тут ложь, из-за которой
         # человек сбрасывает то, что сбрасывать не нужно. Ответ говорит то же,
         # что первый шаг, поэтому и считается с ним вместе.
         if ip:
@@ -536,10 +536,10 @@ def phone_login(
 def phone_set_password(
     session: Session, *, phone: str, password: str, user_agent: str = "", ip: str = ""
 ) -> tuple[Member, str]:
-    """Задать пароль по номеру — только учётке в окне ожидания — и войти.
+    """Задать пароль по номеру - только учётке в окне ожидания - и войти.
 
     Раньше экран говорил «Пароль задан, войдите с ним» и просил тот же пароль
-    в третий раз. Пароль только что набран дважды, окно ожидания проверено —
+    в третий раз. Пароль только что набран дважды, окно ожидания проверено -
     повторный ввод ничего не охраняет. Вход идёт той же `_success`, что и
     обычный: с событием в журнале и сбросом счётчиков.
     """
@@ -580,7 +580,7 @@ def phone_set_password(
     )
 
 
-#: «Забыл пароль» — не чаще раза в десять минут на номер.
+#: «Забыл пароль» - не чаще раза в десять минут на номер.
 FORGOT_EVERY = timedelta(minutes=10)
 
 
@@ -637,7 +637,7 @@ def resolve(
     """Токен из cookie → снимок вошедшего с правами. Просрочку удаляем сразу.
 
     Считается на каждом запросе, включая опрос реестра раз в две секунды,
-    поэтому сеанс, учётка, компания и членство — одним запросом, а права —
+    поэтому сеанс, учётка, компания и членство - одним запросом, а права -
     вторым и только у сотрудника (`access.load`).
     """
     if not token:
@@ -665,7 +665,7 @@ def resolve(
         session.flush()
         return None
 
-    # Ждёт пароль или заблокирована — ни одного маршрута. Одна проверка на все
+    # Ждёт пароль или заблокирована - ни одного маршрута. Одна проверка на все
     # двери: сеанс такой учётки существовать не должен (сброс их обрывает), но
     # если он есть, он ничего не открывает.
     if user.status != "active":
@@ -731,7 +731,7 @@ def logout(session: Session, token: str | None, *, ip: str = "", user_agent: str
 
 
 def companies_of(session: Session, user_id: uuid.UUID) -> list[dict[str, object]]:
-    """Компании человека — для переключателя в шапке. Закрытые не показываются."""
+    """Компании человека - для переключателя в шапке. Закрытые не показываются."""
     rows = session.execute(
         sa.select(Workspace.id, Workspace.title, FinanceMembership.role)
         .join(FinanceMembership, FinanceMembership.workspace_id == Workspace.id)
@@ -755,7 +755,7 @@ def switch_company(session: Session, token: str, workspace_id: uuid.UUID) -> Mem
     if membership is None or membership.blocked_at is not None:
         raise AuthError("Эта компания вам не открыта")
     row = session.get(FinanceSession, member.session_id)
-    if row is None:  # pragma: no cover — resolve уже проверил
+    if row is None:  # pragma: no cover - resolve уже проверил
         raise AuthError("Сессия истекла")
     row.workspace_id = workspace_id
     session.flush()
@@ -801,7 +801,7 @@ def invite(
 
     Пароль задаёт владелец и передаёт лично; флаг `must_change_password`
     заставит сменить его при первом входе. Сотрудников по телефону заводит
-    кабинет (`people.create_employee`) — там пароль человек задаёт сам.
+    кабинет (`people.create_employee`) - там пароль человек задаёт сам.
 
     Старые роли `accountant`/`viewer` превращаются в сотрудника с личными
     правами прежней роли; администратора назначает только владелец.
@@ -902,7 +902,7 @@ def members_of(session: Session, workspace_id: uuid.UUID) -> list[dict[str, obje
 def change_role(session: Session, member: Member, *, user_id: uuid.UUID, role: str) -> None:
     """Роль в компании. Администраторов назначает и снимает только владелец.
 
-    Иначе администратор мог бы поднять до себя любого сотрудника — а через
+    Иначе администратор мог бы поднять до себя любого сотрудника - а через
     сброс пароля и окно ожидания войти его учёткой.
     """
     from app.finance import access as access_mod, people
@@ -912,7 +912,7 @@ def change_role(session: Session, member: Member, *, user_id: uuid.UUID, role: s
     if role not in INVITE_ROLES:
         raise AuthError("Такой роли нет")
     if user_id == member.user_id:
-        raise AuthError("Свою роль менять нельзя — иначе можно остаться без прав")
+        raise AuthError("Свою роль менять нельзя - иначе можно остаться без прав")
     membership = session.scalar(
         sa.select(FinanceMembership).where(
             FinanceMembership.workspace_id == member.workspace_id,
@@ -936,7 +936,7 @@ def change_role(session: Session, member: Member, *, user_id: uuid.UUID, role: s
     if before != stored or role in access_mod.LEGACY_GRANTS:
         _event(
             session, member.workspace_id, "people.role",
-            title=f"роль: {employee.full_name if employee else user_id} — {before} → {stored}",
+            title=f"роль: {employee.full_name if employee else user_id} - {before} → {stored}",
             user_id=member.user_id, session_id=member.session_id, ip=member.ip,
             user_agent=member.user_agent, actor=member.login,
             entity="employee", entity_id=employee.id if employee else user_id,
@@ -955,10 +955,10 @@ def transfer_ownership(
     """Передать владение компанией другому человеку (29.09.2026).
 
     Исключительное право владельца: только он, только со своим паролем и
-    только тому, кто уже входит в компанию сам (действующая учётка — не
+    только тому, кто уже входит в компанию сам (действующая учётка - не
     «ждёт пароль» и не заблокирована): иначе компания осталась бы без
     владельца, который может войти. Прежний владелец становится
-    администратором (или сотрудником — `keep`). Вернуть владение может только
+    администратором (или сотрудником - `keep`). Вернуть владение может только
     новый владелец: у администратора этой двери нет.
     """
     from app.finance import people
@@ -1061,7 +1061,7 @@ def set_password(session: Session, member: Member, *, old: str, new: str) -> int
 
     Даже когда пароль временный: человек, получивший доступ к чужому открытому
     браузеру, не должен менять пароль, не зная прежнего. Остальные сеансы
-    закрываются — экран говорит об этом заранее. Возвращает, сколько закрыто.
+    закрываются - экран говорит об этом заранее. Возвращает, сколько закрыто.
     """
     user = session.get(FinanceUser, member.user_id)
     if user is None:
@@ -1126,9 +1126,9 @@ def revoke_session(session: Session, member: Member, session_id: uuid.UUID) -> N
 
 
 def set_profile(session: Session, member: Member, *, full_name: str | None = None, phone: str | None = None) -> FinanceUser:
-    """Свои ФИО и телефон — владельцу и администратору.
+    """Свои ФИО и телефон - владельцу и администратору.
 
-    Сотруднику их задаёт администратор: телефон — это логин, и менять его
+    Сотруднику их задаёт администратор: телефон - это логин, и менять его
     себе значило бы переносить учётку на чужой номер без свидетелей.
     """
     from app.finance import people
@@ -1171,15 +1171,15 @@ def set_profile(session: Session, member: Member, *, full_name: str | None = Non
 
 
 def set_email(session: Session, member: Member, *, email: str, password: str) -> FinanceUser:
-    """Сменить свою почту — логин входа (29.09.2026: «одну почту поставили, и
+    """Сменить свою почту - логин входа (29.09.2026: «одну почту поставили, и
     её никак не изменить»).
 
-    Пароль спрашиваем всегда: почта — это логин, и человек у чужого открытого
+    Пароль спрашиваем всегда: почта - это логин, и человек у чужого открытого
     браузера не должен переносить учётку на свой адрес. Сеансы не закрываются:
     пароль прежний, поменялось только имя для входа.
 
     Владелец, зарегистрированный без ФИО, заведён сотрудником под своей
-    почтой (`people.ensure_employee`), — такая запись получает новую почту,
+    почтой (`people.ensure_employee`), - такая запись получает новую почту,
     иначе в списках и истории стояла бы прежняя.
     """
     from app.finance.contracts.models import Employee
@@ -1213,7 +1213,7 @@ def set_email(session: Session, member: Member, *, email: str, password: str) ->
                 pass
     if member.workspace_id is not None:
         _event(
-            session, member.workspace_id, "auth.email", title=f"почта для входа изменена: {before or '—'} → {user.email}",
+            session, member.workspace_id, "auth.email", title=f"почта для входа изменена: {before or '-'} → {user.email}",
             user_id=member.user_id, session_id=member.session_id, ip=member.ip,
             user_agent=member.user_agent, actor=user.email, entity_id=member.user_id,
             before={"email": before}, after={"email": user.email},

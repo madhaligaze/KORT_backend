@@ -1,19 +1,19 @@
 """HTTP-маршруты реестра договоров «Финансов» (`/finance/contracts/…`).
 
-Вход и компания — те же, что у раздела (`current_member`, `_workspace` из
+Вход и компания - те же, что у раздела (`current_member`, `_workspace` из
 `routes/finance.py`); сюда не импортируется ничего из `app.bbc`.
 
 Что фронт получает на отказ
 ───────────────────────────
-* 422 `{"code": "mode_required", "fields": [...]}` — правка стороны или суммы
+* 422 `{"code": "mode_required", "fields": [...]}` - правка стороны или суммы
   без ответа «опечатка или с даты»; по коду фронт открывает вопрос у поля.
-* 409 `{"code": "conflict", "conflicts": [...], "contract": {...}}` — поле
+* 409 `{"code": "conflict", "conflicts": [...], "contract": {...}}` - поле
   успели поменять; конфликт считается по полю, а не по записи.
-* 404 — договора нет или он не открыт: ответ одинаковый, иначе перебор
+* 404 - договора нет или он не открыт: ответ одинаковый, иначе перебор
   идентификаторов выдавал бы, какие договоры существуют.
-* 403 — действие не открыто; 400 — значение нельзя принять, с текстом.
+* 403 - действие не открыто; 400 - значение нельзя принять, с текстом.
 
-Обработчики — обычный `def`: внутри синхронные SQLAlchemy и openpyxl.
+Обработчики - обычный `def`: внутри синхронные SQLAlchemy и openpyxl.
 """
 from __future__ import annotations
 
@@ -46,10 +46,10 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/finance/contracts", tags=["finance-contracts"])
 
-#: Одна проверка на все двери реестра — раздел «Договоры» открыт на чтение
+#: Одна проверка на все двери реестра - раздел «Договоры» открыт на чтение
 #: или на правку. Временный пароль (`must_change_password`), продиктованный
 #: по телефону и оставшийся в переписке, не открывает договоры: его
-#: отсекает `require_access` в `routes/finance.py` — одна дверь для всего
+#: отсекает `require_access` в `routes/finance.py` - одна дверь для всего
 #: раздела, а не проверка по месту (урок дашборда BBC, где её забыли в одном
 #: маршруте). Строки и поля договоров режутся дальше, в сервисе, по `Access`.
 contract_member = require_access("contracts", "view")
@@ -145,13 +145,13 @@ def list_payments(member: Member = Depends(contract_member)) -> dict[str, Any]:
 
 
 class SyncIn(BaseModel):
-    #: Откуда строки — для журнала: «Google: BBC Реестр ЮО - Разовые, лист Разовые».
+    #: Откуда строки - для журнала: «Google: BBC Реестр ЮО - Разовые, лист Разовые».
     source: str = ""
     #: Строки: `{"number": "№ЮО/143", "customer": "ТОО …", "values": {"Статус": "Исполнен", …}}`.
     rows: list[dict[str, Any]]
-    #: `false` (по умолчанию) — пробный прогон: только отчёт.
+    #: `false` (по умолчанию) - пробный прогон: только отчёт.
     apply: bool = False
-    #: `empty` — заполнять только пустое; `all` — и менять расходящееся.
+    #: `empty` - заполнять только пустое; `all` - и менять расходящееся.
     overwrite: str = "empty"
     #: Заводить договоры, которых в KORT нет.
     create: bool = True
@@ -159,10 +159,10 @@ class SyncIn(BaseModel):
 
 @router.post("/sync")
 def sync_contracts(body: SyncIn, member: Member = Depends(contract_editor)) -> dict[str, Any]:
-    """Сверка реестра с внешним источником (`contracts/sync.py`) — шлюз для скриптов.
+    """Сверка реестра с внешним источником (`contracts/sync.py`) - шлюз для скриптов.
 
-    Пробный прогон по умолчанию; с `apply` — правки тем же путём, что карточка,
-    каждая в истории договора. Инструкция — `backend/docs/sync-gateway.md`.
+    Пробный прогон по умолчанию; с `apply` - правки тем же путём, что карточка,
+    каждая в истории договора. Инструкция - `backend/docs/sync-gateway.md`.
     """
     access = _access(member)
     with finance_session() as session:
@@ -179,8 +179,8 @@ def sync_contracts(body: SyncIn, member: Member = Depends(contract_editor)) -> d
 
 @router.get("/summary")
 def list_summary(force: bool = Query(False), member: Member = Depends(contract_member)) -> dict[str, Any]:
-    """«Оплачено/Остаток (сводка)» видимых договоров — из книги-сводки компании.
-    `force` — «Обновить»: перечитать книгу, не дожидаясь срока кэша."""
+    """«Оплачено/Остаток (сводка)» видимых договоров - из книги-сводки компании.
+    `force` - «Обновить»: перечитать книгу, не дожидаясь срока кэша."""
     access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -192,7 +192,7 @@ def list_summary(force: bool = Query(False), member: Member = Depends(contract_m
 
 @router.get("/shares")
 def list_shares(member: Member = Depends(contract_member)) -> dict[str, Any]:
-    """Доли людей видимых договоров — только открытые этому человеку (`shares.py`):
+    """Доли людей видимых договоров - только открытые этому человеку (`shares.py`):
     «По сотрудникам» считает по ним. Объявлен до `/{contract_id}`."""
     access = _access(member)
     with finance_session() as session:
@@ -202,7 +202,7 @@ def list_shares(member: Member = Depends(contract_member)) -> dict[str, Any]:
 
 @router.get("/restore-points")
 def list_restore_points(member: Member = Depends(contract_member)) -> dict[str, Any]:
-    """Точки восстановления листа: свои, у администратора — все."""
+    """Точки восстановления листа: свои, у администратора - все."""
     access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -211,7 +211,7 @@ def list_restore_points(member: Member = Depends(contract_member)) -> dict[str, 
 
 @router.post("/restore-points/{point_id}/restore")
 def restore_point(point_id: UUID, member: Member = Depends(contract_editor)) -> dict[str, Any]:
-    """Вернуть как было до изменения листа — Ctrl+Z листа и «Восстановление» кабинета."""
+    """Вернуть как было до изменения листа - Ctrl+Z листа и «Восстановление» кабинета."""
     access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -246,8 +246,8 @@ def sheet_change(body: SheetChangeIn, member: Member = Depends(contract_editor))
     """Изменение таблицы, о котором лист предупредил и человек согласился.
 
     Одной транзакцией: точка «как было», само изменение, событие журнала
-    (`contracts/restore.py`). Колонки и листы — владельцу и администратору,
-    строки и значения — тому, кому открыта правка договоров.
+    (`contracts/restore.py`). Колонки и листы - владельцу и администратору,
+    строки и значения - тому, кому открыта правка договоров.
     """
     access = _access(member)
     actor = _actor(member)
@@ -257,7 +257,7 @@ def sheet_change(body: SheetChangeIn, member: Member = Depends(contract_editor))
             out = _sheet_action(session, workspace, access, actor, body)
             if body.action in ("values_point", "created_point"):
                 # Точка перед правкой, а не правка: сама правка запишет своё
-                # событие обычным путём, а здесь — что точка поставлена.
+                # событие обычным путём, а здесь - что точка поставлена.
                 history.write(
                     session, workspace, kind="contracts.restore_point", entity="restore_point",
                     title=f"точка восстановления: {(out.get('point') or {}).get('title') or 'нечего запоминать'}",
@@ -320,7 +320,7 @@ def export_xlsx(views: str = Query(""), member: Member = Depends(contract_member
             title = workspace.title
     finally:
         heap.trim()
-    name = f"Реестр договоров — {title} — {datetime.now():%Y-%m-%d}.xlsx"
+    name = f"Реестр договоров - {title} - {datetime.now():%Y-%m-%d}.xlsx"
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -367,7 +367,7 @@ def search_parties(q: str = Query(""), limit: int = Query(20, ge=1, le=100), mem
 
 @router.get("/parties/similar")
 def similar_parties(name: str = Query(""), bin: str = Query(""), member: Member = Depends(contract_member)) -> dict[str, Any]:
-    """Кандидаты на «Это ТОО «Атриум плюс»?» — похожие, но не равные по ключу."""
+    """Кандидаты на «Это ТОО «Атриум плюс»?» - похожие, но не равные по ключу."""
     _access(member)
     import re
 
@@ -395,7 +395,7 @@ def similar_parties(name: str = Query(""), bin: str = Query(""), member: Member 
 
 @router.get("/people")
 def list_people(member: Member = Depends(contract_member)) -> dict[str, Any]:
-    """Справочник ответственных — действующие сотрудники из личного кабинета.
+    """Справочник ответственных - действующие сотрудники из личного кабинета.
 
     Ушедшие в архив в выбор не попадают; подпись у старых договоров, где они
     стоят, приходит вместе с договорами.
@@ -576,15 +576,15 @@ class FilterIn(BaseModel):
 
 
 def _setup_call(member: Member, action, what: str, kind: str, log: dict[str, Any] | None = None):
-    """Настройка реестра — только владелец и администратор; каждая — событие журнала.
+    """Настройка реестра - только владелец и администратор; каждая - событие журнала.
 
     Поле, список, лист, юрлицо меняют то, как читается весь реестр, и
     «кто добавил этот лист» должно быть видно так же, как правка договора.
 
     `log` действие заполняет само, если знает больше общего «поле изменено»:
-    `title` — что именно сделано, `before`/`after` — что было и что стало.
+    `title` - что именно сделано, `before`/`after` - что было и что стало.
     До 29.09.2026 журнал писал только ключ поля, и случайное «спрятано» у
-    «Планируемого срока завершения» читалось в нём как «поле изменено» — ни
+    «Планируемого срока завершения» читалось в нём как «поле изменено» - ни
     что поменялось, ни как было.
     """
     access = _access(member)
@@ -711,7 +711,7 @@ def update_view(view_id: UUID, body: ViewIn, member: Member = Depends(contract_e
         before = setup.view_state(session, workspace, view_id)
         out = setup.view_out(setup.upsert_view(session, workspace, _data(body), view_id))
         change = setup.view_change(before, setup.view_state(session, workspace, view_id))
-        # Лист целиком — большой; в журнал — только если влезает, иначе одно «что сделано».
+        # Лист целиком - большой; в журнал - только если влезает, иначе одно «что сделано».
         if len(str(change)) > 12000:
             change = {"title": change["title"], "before": {"id": str(view_id)}, "after": {"id": str(view_id)}}
         log.update(change)
@@ -905,7 +905,7 @@ def contract_history(contract_id: UUID, before: str | None = Query(None), member
             cursor = datetime.fromisoformat(before) if before else None
             contract = service.get_contract(session, workspace, contract_id)
             registry = service.Registry(session, workspace)
-            # Доли — не всем: чужие суммы не должны доезжать через «Историю».
+            # Доли - не всем: чужие суммы не должны доезжать через «Историю».
             hidden = shares_module.hidden_history(session, registry, access, contract)
             return {"items": service.history_of(session, workspace, contract_id, before=cursor, hide=hidden)}
         except Exception as exc:  # noqa: BLE001
@@ -913,14 +913,14 @@ def contract_history(contract_id: UUID, before: str | None = Query(None), member
 
 
 class SharesIn(BaseModel):
-    #: `amount` — тенге, `percent` — процент от суммы договора.
+    #: `amount` - тенге, `percent` - процент от суммы договора.
     unit: str = "amount"
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @router.get("/{contract_id}/shares")
 def contract_shares(contract_id: UUID, member: Member = Depends(contract_member)):
-    """Доли исполнителей и отделов — только то, что открыто этому человеку."""
+    """Доли исполнителей и отделов - только то, что открыто этому человеку."""
     access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)

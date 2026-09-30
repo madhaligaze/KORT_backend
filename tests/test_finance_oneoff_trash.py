@@ -1,9 +1,9 @@
 """«Разовые», сводка оплат и корзина (27.09.2026).
 
-* «Оплачено (сводка)» — как колонка Q книги юротдела «Разовые»: сумма «Сумма
-  Факт Поступ.» строк основной сводки того же договора. Колонки сводки — по
-  названиям; договор — по номеру и клиенту, без угадывания.
-* «Разовые» — книга листов тех же договоров вида «Разовая услуга»: отборы по
+* «Оплачено (сводка)» - как колонка Q книги юротдела «Разовые»: сумма «Сумма
+  Факт Поступ.» строк основной сводки того же договора. Колонки сводки - по
+  названиям; договор - по номеру и клиенту, без угадывания.
+* «Разовые» - книга листов тех же договоров вида «Разовая услуга»: отборы по
   сроку от даты договора и «Остатки» по сводке.
 * Корзина: удалённое видно, возвращается, а насовсем не стирается то, на что
   ещё ссылаются живые договоры.
@@ -27,7 +27,7 @@ from app.finance.db import finance_session
 FULL = service.Access(view=True, edit=True, setup=True)
 OWNER = service.Actor(uuid.uuid4(), "owner@test")
 
-#: Шапка как у «Сводки все ЮР лица» — с лишними колонками между нужными.
+#: Шапка как у «Сводки все ЮР лица» - с лишними колонками между нужными.
 HEADER = [
     "Техн. 2Наша \nФирма", "Техн. 2", "Мес", "Техн. 1", ".", "Наша \nФирма", "Вид \nУслуги", "Наш \nСотрудник",
     "Заказчик\n(Название Фирмы)", "По Выписке\nБанка", "По 1C", "Число", "Сумма\nДоговора", "Отдел", "Предмет",
@@ -88,17 +88,17 @@ def test_svodka_po_nazvaniyam_i_bez_ugadyvaniya():
         title="Сводка",
         worksheet="Сводка все ЮР лица",
     )
-    # Написание клиента в реестре другое — клиент тот же.
+    # Написание клиента в реестре другое - клиент тот же.
     found = index.match("№ ЮО/135", ["ТОО Бухгалтерская Фирма Ajour"])
     assert (found.state, found.paid) == ("found", Decimal("188754"))
-    # Договор растянут по месяцам — оплаты складываются, как в каждой строке.
+    # Договор растянут по месяцам - оплаты складываются, как в каждой строке.
     spread = index.match("№ЮО/1", ["ТОО Альфа"])
     assert (spread.paid, spread.rows, spread.months) == (Decimal("150000"), 2, ("ИЮЛЬ 2026", "АВГУСТ 2026"))
-    # Номер есть, клиент другой — не наш договор, в «Оплачено» ничего.
+    # Номер есть, клиент другой - не наш договор, в «Оплачено» ничего.
     other = index.match("№ОБО/65", ["Prosperity KZ audit"])
     assert (other.state, other.paid) == ("other_client", None)
     assert index.match("№404", ["ТОО Альфа"]).state == "missing"
-    # Два похожих клиента под одним номером — спорно, не выбираем.
+    # Два похожих клиента под одним номером - спорно, не выбираем.
     assert index.match("№7", ["ТОО Бета"]).state == "ambiguous"
 
 
@@ -138,7 +138,7 @@ def test_chislovye_usloviya():
     rule = views.validate({"any": [{"all": [{"field": "age_months", "op": "lt", "value": 2}]}]})
     assert views.matches(rule, {"age_months": 1})
     assert not views.matches(rule, {"age_months": 2})
-    # Пустое не меньше и не больше ничего: договор без даты — ни в каком сроке.
+    # Пустое не меньше и не больше ничего: договор без даты - ни в каком сроке.
     assert not views.matches(rule, {})
     with pytest.raises(views.FilterError):
         views.validate({"any": [{"all": [{"field": "age_months", "op": "gte", "value": "много"}]}]})
@@ -169,7 +169,7 @@ def test_razovye_zasevayutsya_i_otbirayut(space, monkeypatch):
             "Разовые", "до 2 мес", "2–3 мес", "3–6 мес", "6+ мес", "Остатки",
         ]
 
-        # Сводка «прочитана»: Альфа оплатила 150 000 из 150 000, Гамма — 40 000 из 100 000.
+        # Сводка «прочитана»: Альфа оплатила 150 000 из 150 000, Гамма - 40 000 из 100 000.
         index = summary.build_index(
             [HEADER, _row("ТОО Альфа", "№ЮО/1", "150000", own="BBCL"), _row("ТОО Гамма", "№ЮО/3", "40000", own="BBCL")],
             title="Сводка", worksheet="Сводка все ЮР лица",
@@ -182,9 +182,9 @@ def test_razovye_zasevayutsya_i_otbirayut(space, monkeypatch):
         places = {item["values"]["number"]: {place["view"] for place in item["views"]} for item in listed["contracts"]}
         assert places["№ЮО/1"] >= {"oneoff", "oneoff_2m"}
         assert "oneoff_6p" in places["№ЮО/2"] and "oneoff_2m" not in places["№ЮО/2"]
-        # Исполнен — ни в каком сроке, но с остатком — в «Остатках».
+        # Исполнен - ни в каком сроке, но с остатком - в «Остатках».
         assert "oneoff_3m" not in places["№ЮО/3"] and "oneoff_rest" in places["№ЮО/3"]
-        # Оплачено всё — в «Остатках» нет; в сводке нет — тоже нет (не «ноль»).
+        # Оплачено всё - в «Остатках» нет; в сводке нет - тоже нет (не «ноль»).
         assert "oneoff_rest" not in places["№ЮО/1"]
         assert "oneoff_rest" not in places["№ЮО/2"]
         assert not any(view.startswith("oneoff") for view in places["№5"])
@@ -194,7 +194,7 @@ def test_razovye_zasevayutsya_i_otbirayut(space, monkeypatch):
 
 
 def test_razovye_dva_statusa_i_zelyonaya_stroka(space):
-    """28.09.2026: в «Разовых» выбор статуса — «на исполнении» и «исполнен», строка
+    """28.09.2026: в «Разовых» выбор статуса - «на исполнении» и «исполнен», строка
     «исполнен» подсвечена (как `=TRIM($E2)="исполнен"` в книге юротдела)."""
     with finance_session() as session:
         workspace = _ws(session, space)
@@ -213,17 +213,17 @@ def test_razovye_dva_statusa_i_zelyonaya_stroka(space):
         tone = {place["view"]: place.get("tone") for place in listed[str(done.id)]["views"]}
         assert tone["oneoff"] == "done"
         assert all("tone" not in place for place in listed[str(going.id)]["views"])
-        # В реестре подсветки нет — правило живёт у блока «Разовых».
+        # В реестре подсветки нет - правило живёт у блока «Разовых».
         assert "tone" not in next(place for place in listed[str(done.id)]["views"] if place["view"] == "main")
 
-        # Выбор — только значения списков и только у полей-списков.
+        # Выбор - только значения списков и только у полей-списков.
         with pytest.raises(finance_service.FinanceError):
             setup.upsert_view(session, workspace, {"blocks": [{**block, "choices": {"number": [statuses["Исполнен"]]}}]}, main.id)
         with pytest.raises(finance_service.FinanceError):
             setup.upsert_view(session, workspace, {"blocks": [{**block, "choices": {"status": [str(uuid.uuid4())]}}]}, main.id)
         with pytest.raises(views.FilterError):
             setup.upsert_view(session, workspace, {"blocks": [{**block, "paint": [{"filter": block["filter"], "tone": "red"}]}]}, main.id)
-        # Подсветка без условий не хранится — она не красила бы ни одной строки.
+        # Подсветка без условий не хранится - она не красила бы ни одной строки.
         cleared = setup.upsert_view(session, workspace, {"blocks": [{**block, "paint": [{"filter": {"any": []}}]}]}, main.id)
         assert "paint" not in cleared.blocks[0]
 
@@ -262,7 +262,7 @@ def test_korzina_ne_stiraet_ispolzuemoe(space):
         _make(session, space, executor="BBC legal support", customer="ТОО Альфа", status="На исполнении")
         registry = service.Registry(session, workspace)
         used = registry.values_by_field["status"]["на исполнении"]
-        # Стоящий в договоре статус и в корзину не уходит — сводят с другим.
+        # Стоящий в договоре статус и в корзину не уходит - сводят с другим.
         with pytest.raises(Exception, match="сведите"):
             setup.update_value(session, workspace, used.id, {"archived": True})
         spare = setup.add_value(session, workspace, "status", "Лишний")
@@ -271,7 +271,7 @@ def test_korzina_ne_stiraet_ispolzuemoe(space):
         trash.purge(session, workspace, "value", spare.id)
         assert trash.listing(session, workspace)["items"] == []
 
-        # Отдел с договором насовсем не стирается — стёрся бы у договора.
+        # Отдел с договором насовсем не стирается - стёрся бы у договора.
         dept = setup.upsert_department(session, workspace, {"code": "ЮО"})
         _make(session, space, executor="BBC legal support", customer="ТОО Бета", department="ЮО")
         dept.archived_at = service._now()

@@ -2,8 +2,8 @@
 
 «Оплачено» и «Остаток» в реестре BBC вели руками по выпискам. Набор держит
 разнесение: банк пишет стороной «ТОО "АЛЬФА"» (своя запись контрагента), а
-реестр — «ТОО Альфа»; у клиента два договора — платёж по сроку; неясно —
-спорный, в «Оплачено» не входит; человек решает — решение держится.
+реестр - «ТОО Альфа»; у клиента два договора - платёж по сроку; неясно -
+спорный, в «Оплачено» не входит; человек решает - решение держится.
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def test_oplata_nahoditsya_po_imeni_bez_kavychek(space):
     with finance_session() as session:
         contract = _make(session, space, executor="BBC", customer="ТОО Альфа", type="Разовая услуга",
                          amount="300 000", signed_at="10.01.2026")
-        # Банк пишет иначе — выписка заводит себе отдельного контрагента.
+        # Банк пишет иначе - выписка заводит себе отдельного контрагента.
         _income(session, space, 'ТОО "АЛЬФА"', "100000", date(2026, 2, 1))
         _income(session, space, "ТОО АЛЬФА", "50000", date(2026, 3, 1))
         summary = _summary(session, space, contract.id)
@@ -113,29 +113,29 @@ def test_dva_dogovora_platezh_po_sroku_inache_spornyy(space):
         _income(session, space, "ТОО Гамма", "120000", date(2026, 2, 10))
         assert _summary(session, space, old.id)["paid"] == "100000.00"
         assert _summary(session, space, new.id)["paid"] == "120000.00"
-        # У абонентского остатка нет — в файле BBC его у них не вели.
+        # У абонентского остатка нет - в файле BBC его у них не вели.
         assert _summary(session, space, new.id)["remaining"] is None
-        # Третий договор с датой внутри срока нового — платёж подходит к обоим,
-        # тогда решает сумма: 5 000 ровно у разового, 120 000 — месячная у нового.
+        # Третий договор с датой внутри срока нового - платёж подходит к обоим,
+        # тогда решает сумма: 5 000 ровно у разового, 120 000 - месячная у нового.
         third = _make(session, space, executor="BBC", customer="ТОО Гамма", type="Разовая услуга", amount="5000",
                       signed_at="01.06.2026")
         _income(session, space, "ТОО Гамма", "5000", date(2026, 6, 1))
         assert _summary(session, space, third.id)["paid"] == "5000.00"
         assert _summary(session, space, new.id)["paid"] == "120000.00"
-        # Сумма не совпала ни с одним — платёж спорный, в «Оплачено» не входит.
+        # Сумма не совпала ни с одним - платёж спорный, в «Оплачено» не входит.
         disputed = _income(session, space, "ТОО Гамма", "7000", date(2026, 7, 1))
         detail = payments.of_contract(session, _ws(session, space), FULL, third.id)
         assert detail["summary"]["paid"] == "5000.00" and detail["summary"]["open"] == 1
         assert [item["how"] for item in detail["items"]] == ["open", "auto"]
         assert _summary(session, space, new.id)["open"] == 1
-        # Человек решает — платёж уходит в этот договор и из спорных у второго.
+        # Человек решает - платёж уходит в этот договор и из спорных у второго.
         payments.decide(session, _ws(session, space), FULL, OWNER, third.id, disputed, "link")
         assert _summary(session, space, third.id)["paid"] == "12000.00"
         assert _summary(session, space, new.id)["open"] == 0
-        # «Не по договору» — платёж пропадает из «Оплачено».
+        # «Не по договору» - платёж пропадает из «Оплачено».
         payments.decide(session, _ws(session, space), FULL, OWNER, third.id, disputed, "unlink")
         assert _summary(session, space, third.id)["paid"] == "5000.00"
-        # «Как по выписке» — снова спорный.
+        # «Как по выписке» - снова спорный.
         payments.decide(session, _ws(session, space), FULL, OWNER, third.id, disputed, "auto")
         assert _summary(session, space, third.id)["open"] == 1
 
@@ -145,7 +145,7 @@ def test_dogovor_bez_daty_ne_delaet_vse_oplaty_spornymi(space):
         dated = _make(session, space, executor="BBC", customer="ТОО Эпсилон", type="Разовая услуга",
                       amount="100000", signed_at="01.02.2026")
         _income(session, space, "ТОО Эпсилон", "40000", date(2026, 3, 1))
-        # Второй договор клиента заведён без даты — прежняя оплата остаётся за первым.
+        # Второй договор клиента заведён без даты - прежняя оплата остаётся за первым.
         _make(session, space, executor="BBC", customer="ТОО Эпсилон", type="Разовая услуга", amount="3000")
         assert _summary(session, space, dated.id)["paid"] == "40000.00"
         assert _summary(session, space, dated.id)["open"] == 0
@@ -154,7 +154,7 @@ def test_dogovor_bez_daty_ne_delaet_vse_oplaty_spornymi(space):
 def test_chuzhoy_schet_ne_nashego_yurlica_ne_oplata(space):
     with finance_session() as session:
         contract = _make(session, space, executor="BBCA", customer="ТОО Дельта", type="Разовая услуга", amount="900")
-        # Поступление на счёт BBC — не оплата договора BBCA.
+        # Поступление на счёт BBC - не оплата договора BBCA.
         _income(session, space, "ТОО Дельта", "900", date(2026, 4, 4))
         assert _summary(session, space, contract.id) is None
 
@@ -181,7 +181,7 @@ def test_dvoyniki_v_spiske(space):
     assert is_similar("Бух. сопровождение", "Бух сопровождение")
     assert not is_similar("НО", "ЮО")
     assert not is_similar("Аудит", "Кадровый аудит")
-    # Две правки по счёту, но смысл противоположный — не двойник.
+    # Две правки по счёту, но смысл противоположный - не двойник.
     assert not is_similar("Действующий", "Недействующий")
     assert not is_similar("Исполнен", "Неисполнен")
     with finance_session() as session:
@@ -191,7 +191,7 @@ def test_dvoyniki_v_spiske(space):
         twin = next(item for item in lists if item["value"] == "Абонентское обслуживаниее")
         base = next(item for item in lists if item["value"] == "Абонентское обслуживание")
         assert twin["similar"] == base["id"]
-        # «Это разные» — подсказка уходит и не возвращается после правки смысла.
+        # «Это разные» - подсказка уходит и не возвращается после правки смысла.
         setup.update_value(session, workspace, uuid.UUID(twin["id"]), {"distinct": base["id"]})
         setup.update_value(session, workspace, uuid.UUID(twin["id"]), {"meaning": {"billing": "month"}})
         lists = setup.schema(session, workspace, FULL)["lists"]["type"]
@@ -252,6 +252,6 @@ def test_vygruzka_s_oplatami_po_vypiske_i_oformleniem(space):
     assert lines.alignment.wrap_text and lines.alignment.vertical == "top"
     assert sheet.row_dimensions[2].height == export.ROW_HEIGHT
     assert sheet.auto_filter.ref == f"A1:{sheet.cell(row=1, column=len(head)).column_letter}2"
-    # Кому журнал не открыт — колонок по выписке в файле нет.
+    # Кому журнал не открыт - колонок по выписке в файле нет.
     other = [cell.value for cell in load_workbook(io.BytesIO(closed)).worksheets[0][1]]
     assert "Оплачено по выписке" not in other and "Сумма Договора" in other

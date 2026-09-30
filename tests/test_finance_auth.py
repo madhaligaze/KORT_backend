@@ -1,6 +1,6 @@
 """Учётки «Финансов»: регистрация компании, вход, роли, границы компаний.
 
-Главная проверка набора — предпоследняя: **данные одной компании не видны
+Главная проверка набора - предпоследняя: **данные одной компании не видны
 другой**. Всё остальное (пароли, роли, переключатель) существует ради неё.
 """
 from __future__ import annotations
@@ -139,7 +139,7 @@ def test_dve_kompanii_odnogo_cheloveka_ne_smeshivayutsya(finance_db) -> None:
         created = auth.add_company(session, member, title="Вторая")
         second_id = created["id"]
 
-    # В первой компании — поступление, во второй ничего.
+    # В первой компании - поступление, во второй ничего.
     with finance_session() as session:
         workspace = service.get_workspace(session, first_id)
         cash = next(a for a in service.list_accounts(session, first_id) if a.name == "Касса")
@@ -207,9 +207,9 @@ def test_smena_parolya_trebuet_starogo(finance_db) -> None:
 
 
 def test_svoya_pochta_menyaetsya_s_parolem_i_vkhod_po_novoy(finance_db) -> None:
-    """29.09.2026: «одну почту поставили, и её никак не изменить». Почта — логин:
-    меняется только с паролем, занятая — отказ, после смены вход по новой, по
-    старой — нет; запись сотрудника, названная почтой, получает новую."""
+    """29.09.2026: «одну почту поставили, и её никак не изменить». Почта - логин:
+    меняется только с паролем, занятая - отказ, после смены вход по новой, по
+    старой - нет; запись сотрудника, названная почтой, получает новую."""
     from app.finance import people
     from app.finance.accounts_model import FinanceUser
     from app.finance.contracts.models import Employee
@@ -236,7 +236,7 @@ def test_svoya_pochta_menyaetsya_s_parolem_i_vkhod_po_novoy(finance_db) -> None:
 
 
 def test_peredacha_vladeniya_tolko_vladelcem_s_parolem_i_deystvuyushchemu(finance_db) -> None:
-    """29.09.2026: «владельцем может стать другой, а я — администратором».
+    """29.09.2026: «владельцем может стать другой, а я - администратором».
     Исключительное право: только владелец, только с паролем, только тому,
     кто уже входит сам; прежний владелец остаётся администратором."""
     from app.finance.accounts_model import FinanceMembership, FinanceUser

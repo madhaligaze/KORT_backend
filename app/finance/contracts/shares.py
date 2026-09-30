@@ -3,36 +3,36 @@
 Откуда
 ──────
 29.09.2026 финансисты BBC: над одним договором работают несколько юристов, и
-доли у них разные — договор на 700 000, у одного 500 000, у другого 200 000.
+доли у них разные - договор на 700 000, у одного 500 000, у другого 200 000.
 Проверка по книгам: в реестре ЮО 6 договоров из 421 на двоих-троих
 («Елжас, Рысбек · 700 000», «Тимур, Салтанат, Алтынай · 348 000»), колонок
 долей нет ни в одной книге, а «Сводка по сотрудникам» считает `SUMIFS` по
-точному имени — договор на двоих в неё не попадает вовсе. Людей в договоре
-сколько угодно: доля — у каждого своя строка, а не «первый и второй».
+точному имени - договор на двоих в неё не попадает вовсе. Людей в договоре
+сколько угодно: доля - у каждого своя строка, а не «первый и второй».
 
 Суммой или процентом
 ────────────────────
 Доля хранится так, как её ввели (`share_amount` или `share_percent`), а
 второе число выводится из суммы договора. Процент следует за суммой: договор
-подорожал соглашением — доли в процентах пересчитались сами. Сумма остаётся
+подорожал соглашением - доли в процентах пересчитались сами. Сумма остаётся
 суммой: у договора, увеличенного после распределения, появится
 нераспределённый остаток, и это видно, а не спрятано пересчётом. Внутри
-договора — одна единица на весь блок: половина долей в тенге, половина в
+договора - одна единица на весь блок: половина долей в тенге, половина в
 процентах складывалась бы только при известной сумме.
 
 Кто видит
 ─────────
-* Владелец и администратор — всё.
-* Начальник отдела (право «Сотрудники и права» своего отдела) — доли всех
+* Владелец и администратор - всё.
+* Начальник отдела (право «Сотрудники и права» своего отдела) - доли всех
   людей в договорах своего отдела: отдел договора, отдел-соисполнитель или
   отдел кого-то из ответственных. Правит их он же.
-* Остальные — только свою долю, если стоят ответственными. Чужих сумм в
+* Остальные - только свою долю, если стоят ответственными. Чужих сумм в
   ответе нет вовсе, а не спрятано в интерфейсе: иначе их было бы видно в
   инструментах браузера.
-* Доли отделов видят администратор, владелец и начальник отдела — в
-  договорах, где стоит его отдел (с полным правом на договоры — во всех),
+* Доли отделов видят администратор, владелец и начальник отдела - в
+  договорах, где стоит его отдел (с полным правом на договоры - во всех),
   пока администратор не снял ему «видит доли отделов» в «Правах отдела»
-  (30.09.2026: по умолчанию видит). Правят — администратор и начальник, у
+  (30.09.2026: по умолчанию видит). Правят - администратор и начальник, у
   которого в договорах «включено всё» (правит, все договоры, без ограничения
   юрлиц).
 
@@ -40,13 +40,13 @@
 `SharedBuild`), а приходят своим запросом. И в «Историю» договора события
 долей попадают только тем, кому доли открыты (`hidden_history`).
 
-Отделы долей — это поле «Отдел»
+Отделы долей - это поле «Отдел»
 ───────────────────────────────
-С 30.09.2026 отделы договора — один список (`Contract.department_rows`), как
-люди в «Ответственном лице»: разнесли доли между HR и ЮО — поле стало «HR,
-ЮО»; вписали в поле «ОБО, НО, ЮО, HR» — у договора четыре отдела, доли пока не
+С 30.09.2026 отделы договора - один список (`Contract.department_rows`), как
+люди в «Ответственном лице»: разнесли доли между HR и ЮО - поле стало «HR,
+ЮО»; вписали в поле «ОБО, НО, ЮО, HR» - у договора четыре отдела, доли пока не
 указаны. Главного отдела нет. Убрать отдел из списка может только
-администратор или владелец — и здесь, и в самом поле.
+администратор или владелец - и здесь, и в самом поле.
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ _PERCENT_SLACK = Decimal("0.01")
 
 
 class SharesError(FinanceError):
-    """Доли нельзя принять — с текстом для человека."""
+    """Доли нельзя принять - с текстом для человека."""
 
 
 # ── Кто что видит ────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ def people_scope(
     people: Sequence[uuid.UUID],
     co: Sequence[uuid.UUID] = (),
 ) -> str:
-    """`all` — доли всех людей; `own` — только своя; `none` — ни одной."""
+    """`all` - доли всех людей; `own` - только своя; `none` - ни одной."""
     if access.admin or heads_contract(access, contract, registry, people, co):
         return "all"
     if access.employee_id is not None and access.employee_id in people:
@@ -153,9 +153,9 @@ def people_scope(
 def departments_open(access: Access, contract: Contract | None = None) -> bool:
     """Видны ли доли отделов договора.
 
-    Администратору и владельцу — всегда. Начальнику — пока администратор не
+    Администратору и владельцу - всегда. Начальнику - пока администратор не
     снял «видит доли отделов» (по умолчанию видит, решение владельца
-    30.09.2026): с полным правом на договоры — во всех, иначе — в договорах,
+    30.09.2026): с полным правом на договоры - во всех, иначе - в договорах,
     где стоит его отдел, в том числе совместных.
     """
     if access.admin:
@@ -168,7 +168,7 @@ def departments_open(access: Access, contract: Contract | None = None) -> bool:
 
 
 def departments_editable(access: Access) -> bool:
-    """Править доли отделов — администратор и начальник с полным правом на договоры."""
+    """Править доли отделов - администратор и начальник с полным правом на договоры."""
     return access.admin or (access.head_department is not None and access.head_shares and access.full_contracts)
 
 
@@ -198,7 +198,7 @@ def _percent_text(value: Decimal | None) -> str | None:
 
 
 def _pair(total: Decimal | None, amount: Decimal | None, percent: Decimal | None) -> tuple[Decimal | None, Decimal | None, str | None]:
-    """(сумма, процент, как введено) — второе число выводится из суммы договора."""
+    """(сумма, процент, как введено) - второе число выводится из суммы договора."""
     if amount is not None:
         derived = (amount * _HUNDRED / total) if total else None
         return amount, derived, "amount"
@@ -220,7 +220,7 @@ def _read_percent(raw: Any, title: str) -> Decimal | None:
     try:
         value = Decimal(text)
     except InvalidOperation as exc:
-        raise SharesError(f"{title}: «{raw}» — не процент") from exc
+        raise SharesError(f"{title}: «{raw}» - не процент") from exc
     if value < 0:
         raise SharesError(f"{title}: доля не бывает отрицательной")
     if value > _HUNDRED:
@@ -236,7 +236,7 @@ def _read_amount(raw: Any, title: str) -> Decimal | None:
     except FinanceError as exc:
         raise SharesError(str(exc).replace("сумма договора", "доля")) from exc
     if terms:
-        raise SharesError(f"{title}: «{terms}» — не сумма")
+        raise SharesError(f"{title}: «{terms}» - не сумма")
     return amount
 
 
@@ -247,7 +247,7 @@ def _read(raw: Any, unit: str, title: str) -> tuple[Decimal | None, Decimal | No
 
 
 def _group(total: Decimal | None, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Итог блока: распределено и остаток — суммой и процентом, где их можно посчитать."""
+    """Итог блока: распределено и остаток - суммой и процентом, где их можно посчитать."""
     amounts = [row["_amount"] for row in rows if row["_amount"] is not None]
     percents = [row["_percent"] for row in rows if row["_percent"] is not None]
     given = [row for row in rows if row["entered"] is not None]
@@ -379,7 +379,7 @@ def _out(
             )
         departments_out = {
             "can_edit": writable and departments_editable(access),
-            # Убрать любой отдел — администратор или владелец; сотрудник — только
+            # Убрать любой отдел - администратор или владелец; сотрудник - только
             # вписанный им самим и без доли (это фронт знает по `departments_by`).
             "can_remove": writable and access.admin,
             "unit": _unit_of(rows),
@@ -402,15 +402,15 @@ def _out(
 
 
 def all_visible(session: Session, workspace: Workspace, access: Access) -> dict[str, Any]:
-    """Доли всех видимых договоров — для «По сотрудникам», листа и отбора «С долями».
+    """Доли всех видимых договоров - для «По сотрудникам», листа и отбора «С долями».
 
-    Договоры, где у кого-то задана доля, и совместные — двое исполнителей и
+    Договоры, где у кого-то задана доля, и совместные - двое исполнителей и
     больше, даже пока доли не разнесены (`people` тогда пустой). До 30.09.2026
     совместные без сумм сюда не попадали, и «С долями» у владельца был пуст:
-    на проде долей не ввели ещё ни в одном договоре, а совместных — шесть.
+    на проде долей не ввели ещё ни в одном договоре, а совместных - шесть.
 
-    У каждого — доли, открытые этому человеку: сотруднику — своя и только в
-    его договорах, начальнику — договоров его отдела, администратору — все.
+    У каждого - доли, открытые этому человеку: сотруднику - своя и только в
+    его договорах, начальнику - договоров его отдела, администратору - все.
     """
     registry = Registry(session, workspace)
     rows = session.execute(
@@ -450,7 +450,7 @@ def all_visible(session: Session, workspace: Workspace, access: Access) -> dict[
                 continue
             value, share, _entered = _pair(contract.amount, amount, percent)
             entry[str(employee_id)] = {"amount": _money_text(value), "percent": _percent_text(share)}
-        # Совместный договор — в ответе и без сумм; одиночный — только с
+        # Совместный договор - в ответе и без сумм; одиночный - только с
         # заданной долей. Сотруднику со `own` сюда попадают лишь договоры,
         # где он сам исполнитель (`people_scope`).
         if entry or contract_id in together:
@@ -466,17 +466,17 @@ def _check_sum(total: Decimal | None, unit: str, values: list[Decimal], label: s
         return
     summed = sum(values, Decimal(0))
     if unit == "percent" and summed > _HUNDRED + _PERCENT_SLACK:
-        raise SharesError(f"{label}: вместе {_percent_text(summed)}% — больше 100%")
+        raise SharesError(f"{label}: вместе {_percent_text(summed)}% - больше 100%")
     if unit == "amount" and total is not None and summed > total + _AMOUNT_SLACK:
         raise SharesError(
-            f"{label}: вместе {_money_text(summed)} — больше суммы договора {_money_text(total)}"
+            f"{label}: вместе {_money_text(summed)} - больше суммы договора {_money_text(total)}"
         )
 
 
 def _unit(raw: Any) -> str:
     unit = str(raw or "amount")
     if unit not in UNITS:
-        raise SharesError("Доля — суммой или процентом")
+        raise SharesError("Доля - суммой или процентом")
     return unit
 
 
@@ -493,7 +493,7 @@ def set_people(
     unit_raw: Any,
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Доли ответственных — все разом: названные получают значение, не названные — пусто."""
+    """Доли ответственных - все разом: названные получают значение, не названные - пусто."""
     registry, contract, people, co = _load(session, workspace, access, contract_id, for_update=True)
     if people_scope(access, contract, registry, people, co) != "all":
         raise PermissionError("Доли исполнителей распределяет начальник отдела или администратор")
@@ -508,7 +508,7 @@ def set_people(
         except ValueError as exc:
             raise SharesError("Сотрудник указан неверно") from exc
         if employee_id not in rows:
-            raise SharesError("Доля — только у ответственного этого договора: сначала впишите его в «Ответственное лицо»")
+            raise SharesError("Доля - только у ответственного этого договора: сначала впишите его в «Ответственное лицо»")
         if employee_id in wanted:
             raise SharesError("Один сотрудник назван дважды")
         name = employees[employee_id].full_name if employee_id in employees else "Доля"
@@ -555,10 +555,10 @@ def set_departments(
     unit_raw: Any,
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Отделы договора и их доли — список целиком: не названный отдел уходит из договора.
+    """Отделы договора и их доли - список целиком: не названный отдел уходит из договора.
 
-    Список отделов — это и поле «Отдел»: его перемена пишется в «Историю» как
-    правка поля, видимая всем, кому открыт договор, а суммы — отдельным
+    Список отделов - это и поле «Отдел»: его перемена пишется в «Историю» как
+    правка поля, видимая всем, кому открыт договор, а суммы - отдельным
     событием долей, только тем, кому доли открыты.
     """
     if not departments_editable(access):
@@ -606,7 +606,7 @@ def set_departments(
     if before != after or list_before != list_after:
         _finish(session, registry, contract, actor, ["department"] if list_before != list_after else [])
         if list_before != list_after:
-            # Поле «Отдел» поменялось — это видят все, кому открыт договор.
+            # Поле «Отдел» поменялось - это видят все, кому открыт договор.
             history.write(
                 session,
                 workspace,
@@ -624,7 +624,7 @@ def set_departments(
                 actor=actor.email,
             )
         if before != after:
-            codes = ", ".join(department.code for department, _a, _p in wanted) or "—"
+            codes = ", ".join(department.code for department, _a, _p in wanted) or "-"
             history.write(
                 session,
                 workspace,

@@ -3,28 +3,28 @@
 Зачем
 ─────
 До 29.09.2026 лист реестра был защищён механизмом Univer: вставка и удаление
-строк и колонок закрыты, колонки «только чтение» — защищённым диапазоном. Цена
-— замки на вкладках и отказ «Диапазон защищён, у вас нет разрешения на
+строк и колонок закрыты, колонки «только чтение» - защищённым диапазоном. Цена
+- замки на вкладках и отказ «Диапазон защищён, у вас нет разрешения на
 установку стилей» на заливке строки, выделенной по «№» (колонка «№»
 защищена, выделение строки её захватывает). Пользователь: «убери блокировку, а
-если кто-то попробует сломать логику таблицы — предупреди окном, что именно
+если кто-то попробует сломать логику таблицы - предупреди окном, что именно
 изменится, и дай вернуть».
 
 Теперь лист ничего не запрещает сам: действие, которое меняет таблицу для
 всех (удалить договоры, добавить или убрать колонку, переименовать шапку или
 лист, передвинуть строки, вставить значения в много договоров), лист
-перехватывает, объясняет последствия и, если человек согласен, делает здесь —
+перехватывает, объясняет последствия и, если человек согласен, делает здесь -
 одной транзакцией вместе с точкой восстановления и событием журнала.
 
 Точка восстановления
 ────────────────────
-Хранит только задетое изменением: листы — целиком (их немного), договоры —
-идентификаторами, значения — полями «как было». Не снимок таблицы: вернуть
+Хранит только задетое изменением: листы - целиком (их немного), договоры -
+идентификаторами, значения - полями «как было». Не снимок таблицы: вернуть
 свою вставку не должно значить стереть правки коллег, сделанные после неё.
 Поэтому возврат значений пропускает поле, которое после точки поменял кто-то
 другой, и говорит об этом словами.
 
-Вернуть точку может её автор и администратор — Ctrl+Z в листе или
+Вернуть точку может её автор и администратор - Ctrl+Z в листе или
 «Восстановление» в личном кабинете.
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ from app.finance.contracts.service import (
 from app.finance.models import POSITION_STEP, ActionLog, Workspace
 from app.finance.service import FinanceError
 
-#: Сколько точек держать на компанию. Дальше — старые уходят: вернуть
+#: Сколько точек держать на компанию. Дальше - старые уходят: вернуть
 #: изменение месячной давности значило бы откатить месяц чужой работы.
 KEEP = 300
 #: Поля, которых нет в листе без явного списка колонок (`sheet-adapter.ts`,
@@ -75,7 +75,7 @@ ORDINAL = "row_number"
 
 
 class RestoreError(FinanceError):
-    """Вернуть или изменить нельзя — с причиной для человека."""
+    """Вернуть или изменить нельзя - с причиной для человека."""
 
 
 def _now() -> datetime:
@@ -99,7 +99,7 @@ def _contracts_word(count: int) -> str:
 
 
 def _contracts_of(count: int) -> str:
-    """«у 1 договора», «у 3 договоров» — родительный падеж."""
+    """«у 1 договора», «у 3 договоров» - родительный падеж."""
     return f"{count} {_plural(count, 'договора', 'договоров', 'договоров')}"
 
 
@@ -110,7 +110,7 @@ def _require_setup(access: Access) -> None:
 
 def _require_edit(access: Access) -> None:
     if not access.edit:
-        raise PermissionError("Правка реестра вам не открыта — только просмотр")
+        raise PermissionError("Правка реестра вам не открыта - только просмотр")
 
 
 # ── Точки ────────────────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ def _view(session: Session, workspace: Workspace, key: str) -> EntityView:
         )
     )
     if view is None:
-        raise RestoreError("Такого листа нет — его успели убрать")
+        raise RestoreError("Такого листа нет - его успели убрать")
     return view
 
 
@@ -182,11 +182,11 @@ def _view_state(view: EntityView) -> dict[str, Any]:
 
 
 def _columns(block: dict[str, Any], registry: Registry) -> list[dict[str, Any]]:
-    """Колонки блока списком: явные — как есть, «все поля» — развёрнутые.
+    """Колонки блока списком: явные - как есть, «все поля» - развёрнутые.
 
     Блок без своего списка колонок показывает все поля реестра по порядку (так
     же разворачивает его лист). Правка одной колонки такого блока делает его
-    список явным — иначе вставлять и убирать было бы некуда.
+    список явным - иначе вставлять и убирать было бы некуда.
     """
     columns = [dict(column) for column in (block.get("columns") or []) if isinstance(column, dict)]
     if columns:
@@ -211,7 +211,7 @@ def _insert_after(columns: list[dict[str, Any]], item: dict[str, Any], after: st
         for index, column in enumerate(out):
             if column.get("key") == after:
                 return [*out[: index + 1], item, *out[index + 1 :]]
-    # Без соседа слева — сразу за «№»: адрес строки всегда первый.
+    # Без соседа слева - сразу за «№»: адрес строки всегда первый.
     at = 1 if out and out[0].get("key") == ORDINAL else 0
     if after is None:
         return [*out[:at], item, *out[at:]]
@@ -241,7 +241,7 @@ def _log_view(session: Session, workspace: Workspace, before: dict[str, Any], vi
 def delete_contracts(
     session: Session, workspace: Workspace, access: Access, actor: Actor, ids: Sequence[str], *, view: str = "", book: str = ""
 ) -> dict[str, Any]:
-    """Удалить договоры строк листа в корзину — одной точкой восстановления."""
+    """Удалить договоры строк листа в корзину - одной точкой восстановления."""
     _require_edit(access)
     done: list[str] = []
     numbers: dict[str, str] = {}
@@ -309,8 +309,8 @@ def add_column(
     lefts = list(after or [])
     blocks = []
     for index, block in enumerate(target.blocks or []):
-        # Сосед слева — у каждой части листа свой: колонка F в двух частях —
-        # разные поля. Нет соседа — сразу за «№».
+        # Сосед слева - у каждой части листа свой: колонка F в двух частях -
+        # разные поля. Нет соседа - сразу за «№».
         left = lefts[index] if index < len(lefts) else None
         columns = _insert_after(_columns(block, registry), {"key": field.key, "label": field.title, "width": None}, left)
         blocks.append({**block, "columns": columns})
@@ -333,9 +333,9 @@ def _change_view(
     change: Any,
     title: Any,
 ) -> dict[str, Any]:
-    """Правка листа из самого листа: точка «как было» — лист целиком, до правки.
+    """Правка листа из самого листа: точка «как было» - лист целиком, до правки.
 
-    `title(старое название листа)` — что сделано словами, для точки.
+    `title(старое название листа)` - что сделано словами, для точки.
     """
     _require_setup(access)
     target = _view(session, workspace, view)
@@ -356,7 +356,7 @@ def remove_column(
 ) -> dict[str, Any]:
     """Убрать колонку из листа у всех. Значения поля в договорах остаются."""
     if any(key == ORDINAL for key in keys):
-        raise RestoreError("«№» — адрес строки листа: без неё строки не отличить друг от друга")
+        raise RestoreError("«№» - адрес строки листа: без неё строки не отличить друг от друга")
     names: list[str] = []
 
     def change(target: EntityView, registry: Registry) -> dict[str, Any]:
@@ -386,7 +386,7 @@ def rename_column(
     if not clean:
         raise RestoreError("У колонки должно быть название")
     if key == ORDINAL:
-        raise RestoreError("«№» — адрес строки листа, его название не меняется")
+        raise RestoreError("«№» - адрес строки листа, его название не меняется")
 
     def change(target: EntityView, registry: Registry) -> dict[str, Any]:
         blocks = list(target.blocks or [])
@@ -435,7 +435,7 @@ def move_column(
     after: Sequence[str | None],
 ) -> dict[str, Any]:
     if any(key == ORDINAL for key in keys):
-        raise RestoreError("«№» стоит первой всегда — это адрес строки листа")
+        raise RestoreError("«№» стоит первой всегда - это адрес строки листа")
 
     def change(target: EntityView, registry: Registry) -> dict[str, Any]:
         blocks = []
@@ -521,7 +521,7 @@ def move_rows(
     view: str = "",
     book: str = "",
 ) -> dict[str, Any]:
-    """Передвинуть строки договоров: порядок реестра — общий у всех листов и людей."""
+    """Передвинуть строки договоров: порядок реестра - общий у всех листов и людей."""
     _require_edit(access)
     registry = Registry(session, workspace)
     wanted: list[Contract] = []
@@ -562,7 +562,7 @@ def move_rows(
     old = {str(contract.id): contract.position for contract in wanted}
     step = (upper - lower) // (len(wanted) + 1)
     if step < 1:
-        # Места между соседями нет — порядок реестра раскладывается заново
+        # Места между соседями нет - порядок реестра раскладывается заново
         # гнёздами по 1024, как у новых договоров, и только потом вставка.
         _respace(session, workspace, [cid for _p, cid in others])
         return move_rows(session, workspace, access, actor, ids=ids, before=before, view=view, book=book)
@@ -604,7 +604,7 @@ def values_point(
     view: str = "",
     book: str = "",
 ) -> dict[str, Any]:
-    """Точка перед массовой правкой: значения полей «как было» — снимает сервер, не лист."""
+    """Точка перед массовой правкой: значения полей «как было» - снимает сервер, не лист."""
     _require_edit(access)
     registry = Registry(session, workspace)
     stored: list[dict[str, Any]] = []
@@ -634,7 +634,7 @@ def values_point(
 def created_point(
     session: Session, workspace: Workspace, access: Access, actor: Actor, *, ids: Sequence[str], view: str = "", book: str = ""
 ) -> dict[str, Any]:
-    """Точка после заведения многих договоров вставкой: вернуть — значит убрать их в корзину."""
+    """Точка после заведения многих договоров вставкой: вернуть - значит убрать их в корзину."""
     _require_edit(access)
     done = []
     for raw in ids:
@@ -677,7 +677,7 @@ def restore_point(
 ) -> dict[str, Any]:
     point = session.get(RestorePoint, point_id)
     if point is None or point.workspace_id != workspace.id:
-        raise RestoreError("Такой точки восстановления нет — старые уходят сами")
+        raise RestoreError("Такой точки восстановления нет - старые уходят сами")
     if not access.admin and point.user_id != actor.user_id:
         raise PermissionError("Вернуть чужое изменение может администратор")
     if point.restored_at is not None:
@@ -717,7 +717,7 @@ def _restore_deleted(session, workspace, access, actor, payload, done, skipped) 
         contract = session.get(Contract, uuid.UUID(raw))
         label = f"№ {numbers.get(raw)}" if numbers.get(raw) else "договор без номера"
         if contract is None or contract.workspace_id != workspace.id:
-            skipped.append(f"{label} удалён насовсем — вернуть нечего")
+            skipped.append(f"{label} удалён насовсем - вернуть нечего")
             continue
         if contract.deleted_at is None:
             skipped.append(f"{label} уже в реестре")
@@ -763,7 +763,7 @@ def _restore_values(session, workspace, access, actor, point, payload, done, ski
         try:
             contract = get_contract(session, workspace, contract_id)
         except NotFound:
-            skipped.append("договор удалён — его значения не возвращались")
+            skipped.append("договор удалён - его значения не возвращались")
             continue
         label = f"№ {contract.number}" if contract.number else "договор без номера"
         people = people_of(session, [contract.id]).get(contract.id, [])
@@ -771,7 +771,7 @@ def _restore_values(session, workspace, access, actor, point, payload, done, ski
         for key, before in values.items():
             if _changed_by_others(session, workspace, point, contract_id, key):
                 title = registry.field_by_key[key].title if key in registry.field_by_key else key
-                skipped.append(f"{label}: «{title}» после этого поменяли — не тронуто")
+                skipped.append(f"{label}: «{title}» после этого поменяли - не тронуто")
                 continue
             if value_of(contract, key, people) != before:
                 wanted[key] = before
@@ -833,16 +833,16 @@ def _drop_field(session, workspace, actor, payload, done, skipped) -> None:
         )
     )
     if used:
-        # Колонку успели заполнить — поле уходит из листа, но не из договоров.
-        skipped.append(f"поле «{field.title}» уже заполнено у {_contracts_of(int(used))} — осталось в реестре, из листа убрано")
+        # Колонку успели заполнить - поле уходит из листа, но не из договоров.
+        skipped.append(f"поле «{field.title}» уже заполнено у {_contracts_of(int(used))} - осталось в реестре, из листа убрано")
         return
     setup.update_field(session, workspace, field.key, {"archived": True})
     history.write(
         session, workspace, kind="contracts.setup.field_update", entity="contract_setup",
-        title=f"настройка реестра: поле «{field.title}» — удалено в корзину (возврат листа)",
+        title=f"настройка реестра: поле «{field.title}» - удалено в корзину (возврат листа)",
         before={"key": field.key, "archived": False}, after={"key": field.key, "archived": True}, actor=actor.email,
     )
-    done.append(f"поле «{field.title}» — в корзину")
+    done.append(f"поле «{field.title}» - в корзину")
 
 
 def _restore_order(session, workspace, access, actor, payload, done, skipped) -> None:
@@ -865,7 +865,7 @@ _KIND_WORDS = {
     "contracts_create": "заведённые договоры уйдут в корзину",
     "values": "значения полей станут прежними",
     "view": "лист станет прежним",
-    "field_add": "колонка уйдёт, поле — в корзину",
+    "field_add": "колонка уйдёт, поле - в корзину",
     "order": "строки встанут на прежние места",
 }
 

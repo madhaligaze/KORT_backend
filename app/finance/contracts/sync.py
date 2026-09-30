@@ -1,4 +1,4 @@
-"""Сверка реестра с внешним источником — шлюз для людей и программ без кода KORT.
+"""Сверка реестра с внешним источником - шлюз для людей и программ без кода KORT.
 
 29.09.2026: коллега со своим Claude и доступом к книгам Google должен уметь
 актуализировать реестр «как живой пользователь», не зная устройства
@@ -6,19 +6,19 @@
 нажатия клавиш), а голый API требует знать, как сопоставить строку с
 договором и в каком виде слать значения. Здесь всё это в одном месте.
 
-Строка источника — номер, заказчик и значения по названиям колонок (как в
+Строка источника - номер, заказчик и значения по названиям колонок (как в
 «Настроить реестр») или по ключам полей. Для каждой строки:
 
-* **сопоставление без угадывания** — по номеру (без «№», пробелов и
-  регистра), при нескольких договорах с таким номером — ещё и по заказчику.
-  Не сошлось однозначно — строка не трогается, в отчёте «неоднозначно»;
-* **поле за полем** — «совпадает», «заполнить» (в KORT пусто), «расходится»
-  (в KORT другое — по умолчанию НЕ меняется: решает человек),
+* **сопоставление без угадывания** - по номеру (без «№», пробелов и
+  регистра), при нескольких договорах с таким номером - ещё и по заказчику.
+  Не сошлось однозначно - строка не трогается, в отчёте «неоднозначно»;
+* **поле за полем** - «совпадает», «заполнить» (в KORT пусто), «расходится»
+  (в KORT другое - по умолчанию НЕ меняется: решает человек),
   «изменить» (только с `overwrite="all"`). Пустое в источнике не стирает
   ничего;
-* **нет в KORT** — «завести» (если `create`).
+* **нет в KORT** - «завести» (если `create`).
 
-По умолчанию — пробный прогон: отчёт, в базу ничего. С `apply` правки идут
+По умолчанию - пробный прогон: отчёт, в базу ничего. С `apply` правки идут
 тем же путём, что правка в карточке (`service.patch` / `service.create`):
 закрытые списки, права отдела, история договора с «Вернуть». Строка, которую
 сервер не принял, откатывается целиком и попадает в отчёт с причиной;
@@ -52,7 +52,7 @@ from app.finance.models import Counterparty, Workspace
 from app.finance.service import FinanceError
 
 MAX_ROWS = 2000
-#: Поля, правка которых спрашивает «опечатка или с даты»: сверка — это
+#: Поля, правка которых спрашивает «опечатка или с даты»: сверка - это
 #: исправление по источнику, а не соглашение с даты.
 _MODE_KEYS = {"executor", "customer", "amount"}
 _READ_ONLY = set(SNAPSHOT_FIELDS) | set(LIVE_FIELDS) | set(SUMMARY_FIELDS) | set(DERIVED_FIELDS) | set(COMPUTED_FIELDS)
@@ -100,7 +100,7 @@ def _people_names(session: Session, contract_ids: list[uuid.UUID]) -> dict[uuid.
 
 
 def _current(registry: service.Registry, contract: Contract, key: str, parties: dict, people: dict) -> Any:
-    """Что стоит в договоре — в виде, сравнимом с текстом источника."""
+    """Что стоит в договоре - в виде, сравнимом с текстом источника."""
     raw = service.value_of(contract, key)
     if key == "amount" and raw is None:
         # Сумма словами («20% по разовым») живёт в «Условии суммы».
@@ -129,7 +129,7 @@ def _codes(text: Any) -> set[str]:
 
 
 def _same(registry: service.Registry, key: str, current: Any, incoming: Any) -> bool:
-    """Совпадают ли значения по смыслу: даты — датой, суммы — числом, текст — без регистра и лишних пробелов."""
+    """Совпадают ли значения по смыслу: даты - датой, суммы - числом, текст - без регистра и лишних пробелов."""
     field = registry.field_by_key.get(key)
     kind = field.type if field is not None else "text"
     try:
@@ -150,7 +150,7 @@ def _same(registry: service.Registry, key: str, current: Any, incoming: Any) -> 
     if key == "number":
         return number_key(current) == number_key(incoming)
     if key == "department":
-        # «ЮО, HR» и «HR, ЮО» — одни и те же отделы: список, а не текст.
+        # «ЮО, HR» и «HR, ЮО» - одни и те же отделы: список, а не текст.
         return _codes(current) == _codes(incoming)
     if isinstance(current, bool):
         return current == (str(incoming).strip().lower() in ("1", "true", "да", "yes", "истина"))
@@ -170,11 +170,11 @@ def run(
     create: bool = True,
 ) -> dict[str, Any]:
     if overwrite not in OVERWRITE:
-        raise SyncError("overwrite: «empty» — только пустое, «all» — и расходящееся")
+        raise SyncError("overwrite: «empty» - только пустое, «all» - и расходящееся")
     if not isinstance(rows, list) or not rows:
         raise SyncError("Строк нет")
     if len(rows) > MAX_ROWS:
-        raise SyncError(f"За раз — не больше {MAX_ROWS} строк")
+        raise SyncError(f"За раз - не больше {MAX_ROWS} строк")
     if apply and not access.edit:
         raise PermissionError("Правка договоров вам не открыта")
     registry = service.Registry(session, workspace)
@@ -208,7 +208,7 @@ def run(
                 unknown.append(str(name))
                 continue
             if key in _READ_ONLY:
-                unknown.append(f"{name} (считается само — только чтение)")
+                unknown.append(f"{name} (считается само - только чтение)")
                 continue
             values[key] = value
         if row.get("customer") and "customer" not in values:
@@ -219,7 +219,7 @@ def run(
         if len(found) > 1 and row.get("customer"):
             found = [item for item in found if party_key(parties.get(item.customer_id, "")) == party_key(row["customer"])]
         if len(found) > 1:
-            line.update(status="ambiguous", error="Номер у нескольких договоров — укажите заказчика точнее",
+            line.update(status="ambiguous", error="Номер у нескольких договоров - укажите заказчика точнее",
                         candidates=[str(item.id) for item in found])
             totals["ambiguous"] += 1
             continue
@@ -277,7 +277,7 @@ def run(
                         service.patch(session, workspace, access, actor, contract.id, values, known_seq=None, mode=mode)
                 line["applied"] = True
                 totals["applied"] += 1
-            except Exception as exc:  # noqa: BLE001 — строку, которую сервер не принял, описываем словами
+            except Exception as exc:  # noqa: BLE001 - строку, которую сервер не принял, описываем словами
                 line["applied"] = False
                 line["error"] = str(exc) or type(exc).__name__
                 totals["errors"] += 1

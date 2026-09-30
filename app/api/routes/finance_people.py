@@ -1,20 +1,20 @@
 """HTTP-маршруты доступа «Финансов»: люди, права, журнал действий, уведомления.
 
-Всё это — личный кабинет, а не колонка разделов: отделы и сотрудники, права
-галочками, журнал действий компании и «Ждут решения». Вход и компания — те
+Всё это - личный кабинет, а не колонка разделов: отделы и сотрудники, права
+галочками, журнал действий компании и «Ждут решения». Вход и компания - те
 же, что у раздела (`require_access`, `_workspace` из `routes/finance.py`).
 
 Что фронт получает на отказ
 ───────────────────────────
-* 403 — действие не открыто (права «Сотрудники и права», чужая роль:
+* 403 - действие не открыто (права «Сотрудники и права», чужая роль:
   администратор не меняет владельца и других администраторов; начальник
-  отдела — людей другого отдела, отделы и права выше своих);
-* 404 — нет такого или он чужой; ответ одинаковый, иначе перебор
+  отдела - людей другого отдела, отделы и права выше своих);
+* 404 - нет такого или он чужой; ответ одинаковый, иначе перебор
   идентификаторов выдавал бы, кто есть в другой компании;
-* 400 — значение нельзя принять, с текстом;
-* 422 — фильтр журнала записан неверно.
+* 400 - значение нельзя принять, с текстом;
+* 422 - фильтр журнала записан неверно.
 
-Обработчики — обычный `def`: внутри синхронная SQLAlchemy.
+Обработчики - обычный `def`: внутри синхронная SQLAlchemy.
 """
 from __future__ import annotations
 
@@ -210,7 +210,7 @@ def archive_employee(employee_id: UUID, member: Member = Depends(require_access(
 def create_account(
     employee_id: UUID, body: AccountIn, member: Member = Depends(require_access("people", "edit"))
 ) -> dict[str, Any]:
-    """Открыть вход сотруднику из справочника: телефон — учётка ждёт пароль."""
+    """Открыть вход сотруднику из справочника: телефон - учётка ждёт пароль."""
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -240,7 +240,7 @@ def _employee_action(member: Member, employee_id: UUID, action) -> dict[str, Any
 def reset_password(employee_id: UUID, member: Member = Depends(require_access("people", "edit"))) -> dict[str, Any]:
     """Сброс: старый пароль не действует, сеансы закрыты, снова ждёт пароль 72 часа.
 
-    Сотрудников сбрасывает администратор, администраторов — владелец, владельца —
+    Сотрудников сбрасывает администратор, администраторов - владелец, владельца -
     только команда на сервере.
     """
     _guard()
@@ -289,12 +289,12 @@ def employee_sessions(employee_id: UUID, member: Member = Depends(require_access
 
 
 class GrantsIn(BaseModel):
-    #: Чужой ключ — отказ, а не «200 и ничего не записано»: тело
+    #: Чужой ключ - отказ, а не «200 и ничего не записано»: тело
     #: `{"contracts": …}` без `changes` раньше проходило молча.
     model_config = ConfigDict(extra="forbid")
 
     #: `{ресурс: "none"|"view"|"edit" | {level, scope} | null}`. `null` у
-    #: человека — «как у отдела».
+    #: человека - «как у отдела».
     changes: dict[str, Any] | None = None
     #: Прежнее имя того же поля.
     grants: dict[str, Any] | None = None
@@ -302,7 +302,7 @@ class GrantsIn(BaseModel):
 
 @router.get("/access/catalog")
 def access_catalog(member: Member = Depends(require_access("people"))) -> dict[str, Any]:
-    """Разделы с уровнями и поля договора — строки экрана прав."""
+    """Разделы с уровнями и поля договора - строки экрана прав."""
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -310,9 +310,9 @@ def access_catalog(member: Member = Depends(require_access("people"))) -> dict[s
 
 
 def _subject(session, workspace_id: UUID, kind: str, subject_id: UUID, member: Member):
-    """Отдел или сотрудник этой компании; чужой — 404, как несуществующий.
+    """Отдел или сотрудник этой компании; чужой - 404, как несуществующий.
 
-    Начальнику отдела (`people_department_only`) другие отделы и их люди —
+    Начальнику отдела (`people_department_only`) другие отделы и их люди -
     тоже 404: он их и в списке не видит.
     """
     from app.finance.contracts.models import Department, Employee
@@ -341,10 +341,10 @@ def _effective(rights: access_module.Rights, fields: list[tuple[str, str]]) -> d
 def _department_people(session, workspace_id: UUID, department_id: UUID) -> dict[str, Any]:
     """Люди отдела со входом и кто из них начальник.
 
-    Начальник — не отдельное поле, а право: «Сотрудники и права» с областью
+    Начальник - не отдельное поле, а право: «Сотрудники и права» с областью
     «своего отдела», записанное человеку лично (`access.py`, «Начальник
     отдела»). Экран прав отдела показывает его строкой «Начальник» и ставит
-    тем же правом — второго источника правды нет.
+    тем же правом - второго источника правды нет.
     """
     from app.finance.accounts_model import AccessGrant, FinanceMembership
     from app.finance.contracts.models import Employee
@@ -364,7 +364,7 @@ def _department_people(session, workspace_id: UUID, department_id: UUID) -> dict
     ).all()
     heads: set[str] = set()
     # Начальники, которым администратор снял «видит доли отделов» (по
-    # умолчанию начальник их видит — решение владельца 30.09.2026).
+    # умолчанию начальник их видит - решение владельца 30.09.2026).
     no_shares: set[str] = set()
     for subject_id, level, scope in session.execute(
         sa.select(AccessGrant.subject_id, AccessGrant.level, AccessGrant.scope).where(
@@ -449,7 +449,7 @@ def _access_payload(session, workspace_id: UUID, kind: str, item) -> dict[str, A
 
 @router.get("/access/{kind}/{subject_id}")
 def get_access(kind: str, subject_id: UUID, member: Member = Depends(require_access("people"))) -> dict[str, Any]:
-    """Права отдела (`grants`) или человека (`grants` — личные, `department_grants`, `effective` — итог)."""
+    """Права отдела (`grants`) или человека (`grants` - личные, `department_grants`, `effective` - итог)."""
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -461,7 +461,7 @@ def get_access(kind: str, subject_id: UUID, member: Member = Depends(require_acc
 def put_access(
     kind: str, subject_id: UUID, body: GrantsIn, member: Member = Depends(require_access("people", "edit"))
 ) -> dict[str, Any]:
-    """Записать права. Меняется только присланное; ответ — как у GET."""
+    """Записать права. Меняется только присланное; ответ - как у GET."""
     _guard()
     changes = body.changes if body.changes is not None else (body.grants or {})
     with finance_session() as session:
@@ -480,7 +480,7 @@ def put_access(
                     )
                 )
             if role in access_module.ADMIN_ROLES:
-                raise HTTPException(status_code=400, detail="Администратор видит и правит всё — права ему не записываются")
+                raise HTTPException(status_code=400, detail="Администратор видит и правит всё - права ему не записываются")
             if not member.rights.is_admin and item.user_id == member.user_id:
                 raise HTTPException(status_code=403, detail="Свои права меняет администратор")
         elif not member.rights.is_admin and item.id == member.rights.department_id:
@@ -543,9 +543,9 @@ def read_audit(
     cursor: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
-    """Журнал действий: `{items, next_cursor}`; курсор — на следующую страницу.
+    """Журнал действий: `{items, next_cursor}`; курсор - на следующую страницу.
 
-    С правом «Журнал действий» — вся компания и любые фильтры. Без него —
+    С правом «Журнал действий» - вся компания и любые фильтры. Без него -
     только свои действия («Моё · Действия»): фильтр по человеку ставится сам.
     """
     _guard()
@@ -574,7 +574,7 @@ def read_audit(
             )
         except audit.AuditError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # Оба имени курсора: `next_cursor` — основное, `next` — короткое.
+        # Оба имени курсора: `next_cursor` - основное, `next` - короткое.
         return {"items": page["items"], "next_cursor": page["next_cursor"], "next": page["next_cursor"]}
 
 
@@ -616,7 +616,7 @@ def audit_view(body: ViewIn, member: Member = Depends(current_member)) -> dict[s
 
 @router.post("/audit/{entry_id}/undo")
 def audit_undo(entry_id: UUID, member: Member = Depends(require_access(UNDO_RESOURCES, "edit"))) -> dict[str, Any]:
-    """«Откатить» из журнала действий — то же, что `POST /finance/history/{id}/undo`."""
+    """«Откатить» из журнала действий - то же, что `POST /finance/history/{id}/undo`."""
     _guard()
     return undo_entry(member, entry_id)
 
