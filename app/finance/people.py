@@ -907,6 +907,34 @@ def end_employee_sessions(session: Session, workspace: Workspace, member: auth.M
     return closed
 
 
+def end_employee_session(
+    session: Session, workspace: Workspace, member: auth.Member, employee_id: uuid.UUID, session_id: uuid.UUID
+) -> int:
+    """Закрыть один сеанс сотрудника - кнопка «Завершить» в строке «Сеансов».
+
+    До 01.10.2026 кнопка в строке звала «завершить все сеансы»: администратор
+    закрывал сеанс на потерянном телефоне, а человека выбрасывало и с рабочего
+    компьютера. Проверки - те же, что у «Завершить сеансы»; свой текущий сеанс
+    так не закрывается - для него есть «Выйти».
+    """
+    employee = get_employee(session, workspace.id, employee_id)
+    _user, target = _account_of(session, workspace.id, employee)
+    _check_manage(member, target)
+    if target.user_id != member.user_id:
+        _check_reach(member, employee)
+    row = session.get(FinanceSession, session_id)
+    if row is None or row.user_id != target.user_id or row.workspace_id != workspace.id:
+        raise NotFound("Сеанс не найден")
+    if row.id == member.session_id:
+        raise PeopleError("Это ваш сеанс - выйти можно кнопкой «Выйти»")
+    session.delete(row)
+    session.flush()
+    _event(session, workspace, "people.session_end",
+           f"сеанс завершён: {short_name(employee.full_name)}",
+           employee=employee, after={"session_id": str(session_id)})
+    return 1
+
+
 def employee_sessions(session: Session, workspace: Workspace, member: auth.Member, employee_id: uuid.UUID) -> list[dict[str, Any]]:
     """Сеансы сотрудника в этой компании.
 
@@ -939,6 +967,7 @@ __all__ = [
     "department_out",
     "employee_payload",
     "employee_sessions",
+    "end_employee_session",
     "end_employee_sessions",
     "ensure_employee",
     "ensure_member_employees",

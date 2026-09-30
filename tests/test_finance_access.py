@@ -616,6 +616,32 @@ def test_blokirovka_zakryvaet_vhod_v_etu_kompaniyu(app: FastAPI) -> None:
     assert again.status_code == 200
 
 
+def test_zavershit_odin_seans_sotrudnika_ostalnye_zhivut(app: FastAPI) -> None:
+    """01.10.2026: «Завершить» в строке сеанса сотрудника закрывало все его
+    сеансы - сеанс на потерянном телефоне закрывали, а человека выбрасывало и
+    с рабочего компьютера. Теперь закрывается тот, что в строке."""
+    owner = register(app)
+    card = employee(owner, "Сейтова Айдана", "+77025550122")
+    grant(owner, "employee", card["id"], {"journal": "view"})
+    laptop = activate(app, "+77025550122")
+    phone = client(app, "10.0.0.11")
+    assert phone.post(f"{BASE}/auth/phone/login", json={"phone": "+77025550122", "password": "secret-123"}).status_code == 200
+    sessions = owner.get(f"{BASE}/people/employees/{card['id']}/sessions").json()["items"]
+    # Задать пароль - уже вход, и `activate` входит ещё раз: сеансов больше двух.
+    assert len(sessions) >= 2
+    lost = next(item for item in sessions if item["ip"] == "10.0.0.11")
+    ended = owner.delete(f"{BASE}/people/employees/{card['id']}/sessions/{lost['id']}")
+    assert ended.status_code == 200, ended.text
+    assert phone.get(f"{BASE}/operations").status_code == 401
+    assert laptop.get(f"{BASE}/operations").status_code == 200
+    # Уже закрытый, чужой или несуществующий - одинаково «не найден».
+    assert owner.delete(f"{BASE}/people/employees/{card['id']}/sessions/{lost['id']}").status_code == 404
+    mine = next(item for item in owner.get(f"{BASE}/auth/sessions").json()["items"] if item["current"])
+    assert owner.delete(f"{BASE}/people/employees/{card['id']}/sessions/{mine['id']}").status_code == 404
+    # Сотрудник без права «Сотрудники и права» чужие сеансы не закрывает.
+    assert laptop.delete(f"{BASE}/people/employees/{card['id']}/sessions/{sessions[0]['id']}").status_code == 403
+
+
 def test_chuzhoy_sotrudnik_otvechaet_kak_nesushchestvuyushchiy(app: FastAPI) -> None:
     first = register(app, "one@bbc.kz")
     card = employee(first, "Чужой Человек", "+77040000001")

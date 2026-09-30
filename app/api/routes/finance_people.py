@@ -273,6 +273,17 @@ def end_sessions(employee_id: UUID, member: Member = Depends(require_access("peo
     )
 
 
+@router.delete("/people/employees/{employee_id}/sessions/{session_id}")
+def end_employee_session(
+    employee_id: UUID, session_id: UUID, member: Member = Depends(require_access("people", "edit"))
+) -> dict[str, Any]:
+    """Закрыть один сеанс сотрудника - «Завершить» в строке его «Сеансов»."""
+    _guard()
+    return _employee_action(
+        member, employee_id, lambda s, w: people.end_employee_session(s, w, member, employee_id, session_id)
+    )
+
+
 @router.get("/people/employees/{employee_id}/sessions")
 def employee_sessions(employee_id: UUID, member: Member = Depends(require_access("people"))) -> dict[str, Any]:
     """Сеансы сотрудника: устройство, IP, последнее действие."""

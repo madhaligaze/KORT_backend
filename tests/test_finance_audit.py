@@ -311,6 +311,9 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
               json={"phone": "+77025550122"})
     request = next(item for item in owner.get(f"{BASE}/notifications").json()["items"] if item["actionable"])
     walk.call(owner, "POST", "/notifications/{notification_id}/resolve", notification_id=request["id"])
+    phone_session = owner.get(f"{BASE}/people/employees/{person['id']}/sessions").json()["items"][0]["id"]
+    walk.call(owner, "DELETE", "/people/employees/{employee_id}/sessions/{session_id}",
+              employee_id=person["id"], session_id=phone_session)
     walk.call(owner, "POST", "/people/employees/{employee_id}/end-sessions", employee_id=person["id"])
     walk.call(owner, "POST", "/people/employees/{employee_id}/block", employee_id=person["id"])
     walk.call(owner, "POST", "/people/employees/{employee_id}/unblock", employee_id=person["id"])
