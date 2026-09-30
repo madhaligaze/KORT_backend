@@ -38,7 +38,7 @@ def _row(n, status, executor, customer, number, signed, dept, kind, subject, amo
     return row
 
 
-def _registry_file() -> bytes:
+def _registry_file(dept_13: str = "НО") -> bytes:
     book = Workbook()
     main = book.active
     main.title = "Сводная"
@@ -63,7 +63,7 @@ def _registry_file() -> bytes:
                      "Аренда", "Аренда нежилого помещения", 60000, end="12q"))
     main.append(_row(8, "действующий", "BBC Marketing", "ТОО Альфа", "№ 12", d(2025, 3, 1), "ОБО",
                      "Абонентское обслуживание", "Бухгалтерское сопровождение", 100000))
-    main.append(_row(9, "действующий", "BBC Marketing", "ТОО Бета", "№ 13", d(2025, 3, 1), "НО",
+    main.append(_row(9, "действующий", "BBC Marketing", "ТОО Бета", "№ 13", d(2025, 3, 1), dept_13,
                      "Абонентское обслуживание", "Налоговое сопровождение", 200000))
 
     buyer = book.create_sheet("Заказчик ГК")
@@ -214,6 +214,29 @@ def test_zavedenie_nichego_ne_teryaet(finance_db):
         with pytest.raises(service.ModeRequired):
             service.patch(session, workspace, FULL, owner, __import__("uuid").UUID(first["id"]),
                           {"executor": "BBCA"}, known_seq=None)
+
+
+def test_otdely_spiskom_iz_fayla(finance_db):
+    """«ОБО, НО,⏎ ЮО» в «Отделе» — три отдела договора, а не текст с замечанием.
+
+    До 30.09.2026 такое значение считалось подсказкой из шапки и откладывалось:
+    договор «4 в 1» стоял без отдела и с «нет в списке «Отдел»».
+    """
+    with finance_session() as session:
+        workspace = finance_service.ensure_workspace(session)
+        batch = importer.start(session, workspace, ACTOR, _registry_file("ОБО, НО,\n ЮО"), "реестр.xlsx")
+        listed = [item for item in _section(batch, "statuses")["items"] if item["field"] == "department"]
+        assert all(not item["odd"] for item in listed)
+        batch = _decide_all(session, workspace, batch)
+        assert not importer.apply(session, workspace, FULL, ACTOR, batch.id)["failed"]
+        registry = service.Registry(session, workspace)
+        item = next(row for row in service.list_all(session, workspace, FULL)["contracts"] if row["values"]["number"] == "№ 13")
+        codes = [registry.departments[__import__("uuid").UUID(value)].code for value in item["values"]["department"]]
+        assert codes == ["ОБО", "НО", "ЮО"]
+        assert "unread_department" not in {issue["code"] for issue in item["issues"]}
+        # И обратно в Excel — списком, как было в ячейке.
+        contract = service.get_contract(session, workspace, __import__("uuid").UUID(item["id"]))
+        assert export._text(registry, contract, "department", []) == "ОБО, НО, ЮО"
 
 
 def test_vygruzka_i_obratnaya_zagruzka(finance_db, tmp_path, monkeypatch):

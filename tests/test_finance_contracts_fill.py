@@ -189,7 +189,7 @@ def test_otvetstvennyy_v_otkrytom_spiske_zavoditsya_no_ne_dubliruetsya(space):
 def test_otdel_iz_spiska(space):
     with finance_session() as session:
         contract = _make(session, space, executor="BBC", customer="ТОО А", department="юо")
-        assert contract.department_id is not None
+        assert len(contract.department_ids) == 1
         with pytest.raises(service.NotInList, match="Отдела «ЮОО» нет в списке"):
             _patch(session, space, contract, department="ЮОО")
 
@@ -208,7 +208,7 @@ def test_zagruzka_fayla_ne_ogranichena(space):
         workspace = _ws(session, space)
         registry = service.Registry(session, workspace)
         scratch = Contract(attrs={}, provenance={}, file_snapshot={})
-        service._set_field(scratch, "status", "нужно закрыть по бух", registry, people_out={})
+        service._set_field(scratch, "status", "нужно закрыть по бух", registry, lists_out={})
         assert "нужно закрыть по бух" in _values(session, space, "status")
 
 

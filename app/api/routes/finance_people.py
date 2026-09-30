@@ -362,24 +362,29 @@ def _department_people(session, workspace_id: UUID, department_id: UUID) -> dict
         )
         .order_by(Employee.position, Employee.full_name)
     ).all()
-    heads = {
-        str(subject_id)
-        for subject_id, level, scope in session.execute(
-            sa.select(AccessGrant.subject_id, AccessGrant.level, AccessGrant.scope).where(
-                AccessGrant.workspace_id == workspace_id,
-                AccessGrant.subject_kind == "employee",
-                AccessGrant.resource == "people",
-                AccessGrant.subject_id.in_([row[0] for row in members] or [None]),
-            )
+    heads: set[str] = set()
+    # Начальники, которым администратор снял «видит доли отделов» (по
+    # умолчанию начальник их видит — решение владельца 30.09.2026).
+    no_shares: set[str] = set()
+    for subject_id, level, scope in session.execute(
+        sa.select(AccessGrant.subject_id, AccessGrant.level, AccessGrant.scope).where(
+            AccessGrant.workspace_id == workspace_id,
+            AccessGrant.subject_kind == "employee",
+            AccessGrant.resource == "people",
+            AccessGrant.subject_id.in_([row[0] for row in members] or [None]),
         )
-        if level == "edit" and (scope or {}).get("rows") == "department"
-    }
+    ):
+        if level == "edit" and (scope or {}).get("rows") == "department":
+            heads.add(str(subject_id))
+            if (scope or {}).get("shares") is False:
+                no_shares.add(str(subject_id))
     return {
         "members": [
             {"id": str(eid), "name": name, "admin": role in access_module.ADMIN_ROLES}
             for eid, name, role in members
         ],
         "heads": sorted(heads),
+        "heads_without_shares": sorted(no_shares),
     }
 
 

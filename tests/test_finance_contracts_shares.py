@@ -255,22 +255,133 @@ def test_doli_otdelov_tolko_nachalniku_s_polnym_pravom(app: FastAPI) -> None:
     done = _put(owner, contract, "percent", [(yuo, "70"), (no, "30")], kind="departments")
     assert done.status_code == 200, done.text
     rows = done.json()["departments"]["rows"]
-    assert [(row["code"], row["amount"], row["main"]) for row in rows] == [("ЮО", "490000.00", True), ("НО", "210000.00", False)]
-    # Начальник ЮО с договорами «своего отдела» — не «включено всё»: долей отделов нет.
+    assert [(row["code"], row["amount"]) for row in rows] == [("ЮО", "490000.00"), ("НО", "210000.00")]
+    # Отделы долей — это и поле «Отдел»: было «ЮО», стало «ЮО, НО».
+    assert owner.get(f"{BASE}/contracts/{contract}").json()["contract"]["values"]["department"] == [yuo, no]
+    # Начальник ЮО видит доли отделов договора, где стоит ЮО (по умолчанию видит,
+    # 30.09.2026), но без «включено всё» в договорах не правит их.
+    seen = _shares(team["head"], contract)["departments"]
+    assert seen is not None and [row["code"] for row in seen["rows"]] == ["ЮО", "НО"] and seen["can_edit"] is False
+    assert _put(team["head"], contract, "percent", [(yuo, "70"), (no, "30")], kind="departments").status_code == 403
+    # Администратор снял «видит доли отделов» — у начальника их нет; вернул — снова видит.
+    hide = {"people": {"level": "edit", "scope": {"rows": "department", "shares": False}}}
+    grant(owner, "employee", ids["head"], hide)
     assert _shares(team["head"], contract)["departments"] is None
-    assert _put(team["head"], contract, "percent", [(yuo, "100")], kind="departments").status_code == 403
-    # Дали всё — открылись.
+    page = owner.get(f"{BASE}/access/department/{yuo}").json()
+    assert ids["head"] in page["heads"] and page["heads_without_shares"] == [ids["head"]]
+    grant(owner, "employee", ids["head"], {"people": {"level": "edit", "scope": {"rows": "department"}}})
+    assert _shares(team["head"], contract)["departments"] is not None
+    # Дали всё — открылась и правка.
     grant(owner, "employee", ids["head"], {"contracts": {"level": "edit", "scope": {"rows": "all", "beyond": True}}})
-    assert _shares(team["head"], contract)["departments"]["rows"][0]["code"] == "ЮО"
+    assert _shares(team["head"], contract)["departments"]["can_edit"] is True
     # Не начальник с тем же правом — нет.
     grant(owner, "employee", ids["first"], {"contracts": {"level": "edit", "scope": {"rows": "all", "beyond": True}}})
     assert _shares(team["first"], contract)["departments"] is None
     # Отдел, названный дважды, и больше 100% — отказ.
     twice = _put(owner, contract, "percent", [(yuo, "50"), (yuo, "20")], kind="departments")
     assert twice.status_code == 400
+    # Начальник с полным правом доли правит, но отдел из договора не убирает.
+    gone = _put(team["head"], contract, "percent", [(yuo, "100")], kind="departments")
+    assert gone.status_code == 403 and "Отдел НО в договор вписали не вы" in gone.json()["detail"]
     # Пустой список — отделов в договоре нет.
     cleared = _put(owner, contract, "amount", [], kind="departments")
     assert cleared.status_code == 200 and cleared.json()["departments"]["rows"] == []
+
+
+# ── «Отдел» — список, общий с долями отделов (30.09.2026) ────────────────────
+
+
+def _one(who: TestClient, contract_id: str):
+    return who.get(f"{BASE}/contracts/{contract_id}")
+
+
+def _edit(who: TestClient, contract_id: str, **values):
+    return who.patch(f"{BASE}/contracts/{contract_id}", json={"values": values, "known_seq": None})
+
+
+def test_otdel_spiskom_kak_otvetstvennye(app: FastAPI) -> None:
+    """«ОБО, НО, ЮО, HR» у договора «4 в 1» — четыре отдела, а не «нет в списке»."""
+    team, _ids, yuo, no = _team(app)
+    owner = team["owner"]
+    hr = department(owner, "HR")
+    # Как в книге: через запятую и с переводом строки.
+    contract = _contract(owner, "ДД/0104", department="НО,\n ЮО")
+    body = _one(owner, contract).json()["contract"]
+    assert body["values"]["department"] == [no, yuo]
+    assert not [issue for issue in body["issues"] if issue["code"] == "unread_department"]
+    # Незнакомая часть закрытого списка — отказ с её написанием, без угадывания.
+    wrong = _edit(owner, contract, department="ЮО, ЮОО")
+    assert wrong.status_code == 400 and "ЮОО" in wrong.json()["detail"]
+    # Доли разнесены — поле то же, в том же порядке.
+    assert _put(owner, contract, "percent", [(no, "30"), (yuo, "70")], kind="departments").status_code == 200
+    # Юрист дописывает отдел в поле: у долей новая строка, прежние доли на месте,
+    # а у договора помечено, кто этот отдел вписал.
+    lawyer = team["first"]
+    lawyer_id = lawyer.get(f"{BASE}/auth/me").json()["user"]["id"]
+    added = _edit(lawyer, contract, department="НО, ЮО, HR")
+    assert added.status_code == 200, added.text
+    assert added.json()["contract"]["values"]["department"] == [no, yuo, hr]
+    assert added.json()["contract"]["departments_by"].get(hr) == lawyer_id
+    rows = {row["code"]: row["percent"] for row in _shares(owner, contract)["departments"]["rows"]}
+    assert rows == {"НО": "30", "ЮО": "70", "HR": None}
+    # Вписанное не им — не убрать и не заменить: только администратор или владелец.
+    removed = _edit(lawyer, contract, department="ЮО, HR")
+    assert removed.status_code == 403 and "Отдел НО в договор вписали не вы" in removed.json()["detail"]
+    # Свою ошибку, пока у отдела нет доли, юрист исправляет сам (владелец, 30.09.2026).
+    fixed = _edit(lawyer, contract, department="НО, ЮО, ЮО")
+    assert fixed.status_code == 200, fixed.text
+    assert fixed.json()["contract"]["values"]["department"] == [no, yuo]
+    # Вписал снова, а владелец уже дал отделу долю — убрать HR юрист больше не может.
+    assert _edit(lawyer, contract, department="НО, ЮО, HR").status_code == 200
+    assert _put(owner, contract, "percent", [(no, "30"), (yuo, "50"), (hr, "20")], kind="departments").status_code == 200
+    shared = _edit(lawyer, contract, department="НО, ЮО")
+    assert shared.status_code == 403 and "У отдела HR уже есть доля" in shared.json()["detail"]
+    assert _one(owner, contract).json()["contract"]["values"]["department"] == [no, yuo, hr]
+    by_owner = _edit(owner, contract, department="НО, ЮО")
+    assert by_owner.status_code == 200 and by_owner.json()["contract"]["values"]["department"] == [no, yuo]
+    rows = {row["code"]: row["percent"] for row in _shares(owner, contract)["departments"]["rows"]}
+    assert rows == {"НО": "30", "ЮО": "50"}
+    # В «Истории» — словами, списком.
+    titles = [item["title"] for item in owner.get(f"{BASE}/contracts/{contract}/history").json()["items"]]
+    assert any("отдел: НО, ЮО, HR → НО, ЮО" in title for title in titles), titles
+
+
+def test_dogovor_vidyat_vse_otdely_spiska(app: FastAPI) -> None:
+    """Договор «НО, ЮО» — договор и НО, и ЮО: юрист «своего отдела» его видит и правит."""
+    team, _ids, _yuo, _no = _team(app)
+    owner = team["owner"]
+    lawyer = team["first"]
+    contract = _contract(owner, "НО/901", department="НО", people="Налоговая Дана")
+    assert _one(lawyer, contract).status_code == 404
+    assert _edit(owner, contract, department="НО, ЮО").status_code == 200
+    seen = _one(lawyer, contract)
+    assert seen.status_code == 200 and not seen.json()["contract"].get("readonly")
+    assert _edit(lawyer, contract, note="юротдел подключился").status_code == 200
+    listed = {item["id"] for item in lawyer.get(f"{BASE}/contracts").json()["contracts"]}
+    assert contract in listed
+
+
+def test_nachalnik_vidit_vse_dogovory_otdela(app: FastAPI) -> None:
+    """Начальник видит договоры, где стоит его отдел, даже при области «где ответственный» — на чтение."""
+    team, ids, _yuo, _no = _team(app)
+    owner = team["owner"]
+    for who in ("head", "second"):
+        grant(owner, "employee", ids[who], {"contracts": {"level": "edit", "scope": {"rows": "own"}}})
+    single = _contract(owner, "ЮО/910", people="Юристов Рысбек")
+    joint = _contract(owner, "ЮО/911", people="Налоговая Дана", department="НО, ЮО")
+    foreign = _contract(owner, "НО/912", people="Налоговая Дана", department="НО")
+    head = team["head"]
+    for contract in (single, joint):
+        seen = _one(head, contract)
+        assert seen.status_code == 200, seen.text
+        assert seen.json()["contract"].get("readonly") is True
+    assert _one(head, foreign).status_code == 404
+    refused = _edit(head, single, note="правка начальника")
+    assert refused.status_code == 400 and "только на просмотр" in refused.json()["detail"]
+    # Обычный юрист с той же областью — только свои.
+    assert _one(team["second"], single).status_code == 404
+    # Администратор и владелец видят и правят всё, как прежде.
+    assert _edit(owner, foreign, note="владелец").status_code == 200
 
 
 # ── Изменения листа и точки восстановления ──────────────────────────────────

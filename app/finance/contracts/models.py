@@ -44,7 +44,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.finance.db import FinanceBase
 from app.finance.models import JSONB, MONEY, _in
@@ -380,9 +380,6 @@ class Contract(FinanceBase):
     economic_role_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid, sa.ForeignKey("list_values.id", ondelete="SET NULL")
     )
-    department_id: Mapped[uuid.UUID | None] = mapped_column(
-        sa.Uuid, sa.ForeignKey("departments.id", ondelete="SET NULL")
-    )
     billing: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
     amount: Mapped[Decimal | None] = mapped_column(MONEY)
     #: Условие суммы текстом, когда числа нет: «20% по разовым, 40% по абон.».
@@ -432,6 +429,19 @@ class Contract(FinanceBase):
         sa.DateTime(timezone=True), server_default=sa.func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    #: Отделы договора по порядку — поле «Отдел»: «HR, ЮО», «ОБО, НО, ЮО, HR» у
+    #: договора «4 в 1». Доли отделов лежат на тех же строках. Грузится вместе
+    #: с договорами одним запросом на всю пачку: по отделам считаются права.
+    department_rows: Mapped[list[ContractDepartment]] = relationship(
+        order_by="ContractDepartment.position",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    @property
+    def department_ids(self) -> list[uuid.UUID]:
+        return [row.department_id for row in self.department_rows]
 
 
 class ContractPerson(FinanceBase):
@@ -457,12 +467,23 @@ class ContractPerson(FinanceBase):
 
 
 class ContractDepartment(FinanceBase):
-    """Отдел, работающий над договором вместе с другими, и его доля.
+    """Отдел договора и его доля — поле «Отдел», как люди в «Ответственном лице».
 
-    Отдел договора (`Contract.department_id`, колонка «Отдел») остаётся одним:
-    по нему стоят листы, права и отборы. Здесь — разделение работы между
-    отделами, которые в остальном друг с другом не связаны. Видят его
-    администратор, владелец и начальник отдела с полным правом на договоры.
+    До 30.09.2026 отдел у договора был один (`contracts.department_id`), а здесь
+    лежали только отделы, между которыми разделили работу. Финансисты,
+    разнеся доли HR 70% / ЮО 30%, видели в поле «Отдел» одно «HR», а договор
+    «4 в 1» с «ОБО, НО, ЮО, HR» из книги — пустым и с замечанием «нет в
+    списке». Теперь список и есть поле. Главного отдела нет, все равны; по
+    каждому из них договор виден отделу и его начальнику.
+
+    Доля — суммой или процентом, как ввели (`shares.py`); пусто — не
+    распределена. Доли видят администратор, владелец и начальник отдела с
+    полным правом на договоры; сам список — все, кому открыт договор.
+
+    `added_by` — кто вписал отдел в договор. Убрать отдел может администратор
+    или владелец, а сотрудник — только вписанный им самим и пока без доли:
+    ошибку в своей правке он исправляет сам (владелец, 30.09.2026). У отделов,
+    пришедших из прежнего одного «Отдела» и из книг, автора нет.
     """
 
     __tablename__ = "contract_departments"
@@ -476,6 +497,9 @@ class ContractDepartment(FinanceBase):
     share_amount: Mapped[Decimal | None] = mapped_column(MONEY)
     share_percent: Mapped[Decimal | None] = mapped_column(sa.Numeric(9, 4))
     position: Mapped[int] = mapped_column(sa.Integer, server_default=sa.text("0"))
+    added_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL")
+    )
 
 
 class ContractAmendment(FinanceBase):

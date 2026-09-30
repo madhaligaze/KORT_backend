@@ -65,6 +65,7 @@ from app.finance.contracts.models import (
     END_KINDS,
     Contract,
     ContractAmendment,
+    ContractDepartment,
     ContractPerson,
     CounterpartyName,
     Department,
@@ -91,7 +92,8 @@ DATE_KEYS = frozenset({"signed_at", "planned_end_at", "end_date"})
 TEXT_KEYS = frozenset(
     {"number", "folder_url", "amendments_text", "amendments_summary_text", "note", "amount_terms"}
 )
-#: Что поле договора значит для замечаний, истории и выдачи.
+#: Что поле договора значит для замечаний, истории и выдачи. Отделов здесь
+#: нет: их у договора список (`Contract.department_rows`), как людей.
 COLUMN_OF = {
     "executor": "executor_id",
     "customer": "customer_id",
@@ -99,8 +101,9 @@ COLUMN_OF = {
     "subject": "subject_id",
     "status": "status_id",
     "economic_role": "economic_role_id",
-    "department": "department_id",
 }
+#: Как режется список в одной ячейке — «Тимур, Салтанат», «ОБО, НО,⏎ ЮО, HR».
+_LIST_SPLIT = re.compile(r"[,;\n/]+")
 _NUMERIC_MONEY = re.compile(r"^[\s\d.,'  ()+\-]*\d[\s\d.,'  ()+\-]*(тг|тенге|₸|kzt)?\.?$", re.IGNORECASE)
 
 
@@ -238,6 +241,9 @@ class Access:
     #: отдела); `None` — не начальник. Начальник видит доли людей в договорах
     #: своего отдела (`shares.py`).
     head_department: uuid.UUID | None = None
+    #: Начальник видит и доли отделов в договорах своего отдела — пока
+    #: администратор не снял (`Rights.people_shares`).
+    head_shares: bool = True
     #: «В договорах включено всё»: правит, все договоры, без ограничения по
     #: юрлицам. Начальнику с таким правом открыты и доли отделов.
     full_contracts: bool = False
@@ -281,6 +287,7 @@ def access_of(member: Any) -> Access:
         hidden=hidden,
         readonly=readonly,
         head_department=head,
+        head_shares=rights.people_shares,
         full_contracts=level == "edit" and rights.contract_rows == "all" and not rights.contract_entities,
     )
 
@@ -715,6 +722,29 @@ class Registry:
             archived=[item for item in items if item.archived_at is not None],
         )
 
+    def input_departments(self, raw: Any, *, closed: bool) -> list[Department]:
+        """Отделы договора — списком, как люди в «Ответственном лице».
+
+        «HR, ЮО» и «ОБО, НО,⏎ ЮО, HR» — несколько отделов. Идентификатор
+        принимается любой: так карточка пересылает уже стоящие, даже ушедшие в
+        архив. В закрытом списке незнакомая часть — отказ с её написанием, в
+        открытом — новый отдел. Повтор отдел не удваивает.
+        """
+        if raw is None or raw == "":
+            return []
+        items = list(raw) if isinstance(raw, (list, tuple)) else _LIST_SPLIT.split(str(raw))
+        out: list[Department] = []
+        for item in items:
+            if isinstance(item, dict):
+                item = item.get("id") or item.get("code")
+            text = str(item or "").strip()
+            if not text:
+                continue
+            department = self.pick_department(text) if closed else self.resolve_department(text)
+            if department is not None and department not in out:
+                out.append(department)
+        return out
+
     def input_people(self, raw: Any, *, closed: bool, title: str) -> list[Employee]:
         """Ответственные из листа или карточки.
 
@@ -812,6 +842,8 @@ class Registry:
         title = self.title(key)
         if fill == "own":
             self.pick_own(raw, title=title)
+        elif key == "department":
+            self.input_departments(raw, closed=True)
         elif kind == "department":
             self.pick_department(raw)
         elif kind == "person":
@@ -940,6 +972,8 @@ def value_of(contract: Contract, key: str, people: Sequence[uuid.UUID] = ()) -> 
         return _plain(getattr(contract, COLUMN_OF[key]))
     if key == "people":
         return [str(item) for item in people]
+    if key == "department":
+        return [str(item) for item in contract.department_ids]
     if key == "amount":
         return _plain(contract.amount)
     if key in DATE_KEYS:
@@ -961,7 +995,7 @@ def facts_of(contract: Contract, registry: Registry, people: Sequence[uuid.UUID]
     """Всё, по чему правило листа может отобрать договор."""
     facts: dict[str, Any] = {
         key: value_of(contract, key, people)
-        for key in (*COLUMN_OF, "people", "billing", "end_kind", "number", "note", "amount_terms")
+        for key in (*COLUMN_OF, "people", "department", "billing", "end_kind", "number", "note", "amount_terms")
     }
     for key, value in (contract.attrs or {}).items():
         facts.setdefault(key, value)
@@ -1001,9 +1035,9 @@ def facts_of(contract: Contract, registry: Registry, people: Sequence[uuid.UUID]
                 texts.append(item.value)
         if texts:
             facts[f"{key}__text"] = texts
-    department = registry.departments.get(contract.department_id) if contract.department_id else None
-    if department is not None:
-        facts["department__text"] = f"{department.code} {department.title or ''}".strip()
+    departments = [registry.departments[item] for item in contract.department_ids if item in registry.departments]
+    if departments:
+        facts["department__text"] = [f"{item.code} {item.title or ''}".strip() for item in departments]
     names = registry.parties_for([contract.executor_id, contract.customer_id])
     for slot in ("executor", "customer"):
         party = names.get(getattr(contract, f"{slot}_id"))
@@ -1330,6 +1364,14 @@ class Output:
                     ],
                     "views": views_module.membership(facts_of(item, registry, mine), registry.views),
                     **({"roles": roles} if (roles := registry.roles_of(item)) else {}),
+                    # Кто вписал отдел: сотрудник убирает только вписанный им
+                    # самим (`_check_departments_kept`). Одно на всех зрителей —
+                    # общий ответ реестра (`SharedBuild`) этим не ломается.
+                    **(
+                        {"departments_by": by}
+                        if (by := {str(row.department_id): str(row.added_by) for row in item.department_rows if row.added_by})
+                        else {}
+                    ),
                     # Договор «другого отдела»: виден, правка — отказ сервера.
                     **({"readonly": True} if read_only_for(item, registry, self.access, mine) else {}),
                     "file_snapshot": (
@@ -1390,6 +1432,11 @@ def visible_to(
 
     `write` — открыт ли он на правку: договор «другого отдела»
     (`view_departments`) виден, но не правится.
+
+    Отделов у договора список, и «своего отдела» — любой из них: договор
+    «HR, ЮО» — и договор ЮО. Начальник отдела видит все договоры, где стоит
+    его отдел, даже при узкой своей области («где ответственный»), но сверх
+    неё — только на чтение (решение владельца 30.09.2026).
     """
     if not access.view or (write and not access.edit):
         return False
@@ -1399,24 +1446,28 @@ def visible_to(
     parties = {contract.executor_id, contract.customer_id} - {None}
     if access.entity_ids and parties and not (parties & set(access.entity_ids)):
         return False
+    departments = set(contract.department_ids)
     if access.rows == "department":
-        own = contract.department_id in access.department_ids
+        own = bool(departments & access.department_ids)
     elif access.rows == "own":
         own = access.employee_id is not None and access.employee_id in people
     else:
         return True
     if own or write:
         return own
-    return contract.department_id is not None and contract.department_id in access.view_departments
+    if access.head_department is not None and access.head_department in departments:
+        return True
+    return bool(departments & access.view_departments)
 
 
 def read_only_for(
     contract: Contract, registry: Registry, access: Access, people: Sequence[uuid.UUID]
 ) -> bool:
-    """Договор виден, но править его нельзя: он из «другого отдела»."""
+    """Договор виден, но править его нельзя: он из «другого отдела» или открыт
+    начальнику сверх его области."""
     return (
         access.edit
-        and bool(access.view_departments)
+        and (bool(access.view_departments) or access.head_department is not None)
         and not visible_to(contract, registry, access, people, write=True)
     )
 
@@ -1427,8 +1478,8 @@ class ReadOnlyContract(FinanceError):
 
 def _check_write(contract: Contract, registry: Registry, access: Access, people: Sequence[uuid.UUID]) -> None:
     if not visible_to(contract, registry, access, people, write=True):
-        department = registry.departments.get(contract.department_id) if contract.department_id else None
-        where = f"отдела {department.code}" if department is not None else "другого отдела"
+        codes = [registry.departments[item].code for item in contract.department_ids if item in registry.departments]
+        where = (f"отдела {codes[0]}" if len(codes) == 1 else f"отделов {', '.join(codes)}") if codes else "другого отдела"
         raise ReadOnlyContract(f"Договор {where} открыт вам только на просмотр")
 
 
@@ -1758,7 +1809,7 @@ def _set_field(
     raw: Any,
     registry: Registry,
     *,
-    people_out: dict[str, list[Employee]],
+    lists_out: dict[str, list[Any]],
     strict: bool = False,
 ) -> Any:
     """Разобрать значение поля и записать в договор. Возвращает новое значение API.
@@ -1766,6 +1817,10 @@ def _set_field(
     `strict` — ручной ввод (лист, карточка, API): поле заполняется по своему
     способу (`Registry.fill`), закрытый список не заводит новое из опечатки.
     Загрузка Excel идёт без него — там незнакомое решает протокол разбора.
+
+    Списки — людей (`people`) и отделов (`departments`) — только разбираются в
+    `lists_out`: пишет их вызывающий, когда прочитаны все поля строки
+    (`_write_people`, `_write_departments`).
     """
     title = registry.field_by_key.get(key).title if key in registry.field_by_key else key
     fill = registry.fill(key) if strict else ""
@@ -1792,10 +1847,9 @@ def _set_field(
         value = registry.pick_value(key, raw) if fill == "list" else registry.resolve_value(key, raw)
         setattr(contract, COLUMN_OF[key], value.id if value else None)
     elif key == "department":
-        department = registry.pick_department(raw) if fill == "list" else registry.resolve_department(raw)
-        contract.department_id = department.id if department else None
+        lists_out["departments"] = registry.input_departments(raw, closed=fill == "list")
     elif key == "people":
-        people_out["people"] = (
+        lists_out["people"] = (
             registry.input_people(raw, closed=fill == "list", title=title)
             if strict
             else registry.resolve_people(raw)
@@ -1912,6 +1966,54 @@ def _write_people(session: Session, contract: Contract, people: list[Employee]) 
         )
 
 
+def _write_departments(contract: Contract, departments: list[Department], by: uuid.UUID | None) -> None:
+    """Отделы договора по порядку — с их долями, как `_write_people`.
+
+    Доля принадлежит отделу в договоре: дописали отдел или поменяли порядок —
+    доли остальных на месте. Ушедший из поля уходит вместе со своей долей
+    (кому это можно — `_check_departments_kept`). У нового отдела запоминается,
+    кто его вписал (`by`).
+    """
+    kept = {row.department_id: row for row in contract.department_rows}
+    rows: list[ContractDepartment] = []
+    for index, department in enumerate(departments):
+        row = kept.get(department.id) or ContractDepartment(department_id=department.id, added_by=by)
+        row.position = index
+        rows.append(row)
+    contract.department_rows = rows
+
+
+def _check_departments_kept(
+    access: Access, registry: Registry, contract: Contract, departments: list[Department], by: uuid.UUID | None
+) -> None:
+    """Убрать отдел из договора — администратор или владелец (решение владельца 30.09.2026).
+
+    Сотрудник убирает только отдел, который вписал сам и у которого ещё нет
+    доли: свою ошибку он исправляет сам, а вписанное другими, пришедшее из книг
+    и уже разделённое деньгами — нет. Везде: карточка, ячейка листа, вставка,
+    «Вернуть», доли отделов. Замена отдела (HR → ЮО) — тоже «убрать».
+    """
+    if access.admin:
+        return
+    wanted = {item.id for item in departments}
+    gone = [row for row in contract.department_rows if row.department_id not in wanted]
+
+    def code(row: ContractDepartment) -> str:
+        department = registry.departments.get(row.department_id)
+        return department.code if department is not None else "?"
+
+    foreign = [code(row) for row in gone if by is None or row.added_by != by]
+    if foreign:
+        what = f"Отдел {foreign[0]}" if len(foreign) == 1 else f"Отделы {', '.join(foreign)}"
+        whom = "его" if len(foreign) == 1 else "их"
+        raise PermissionError(f"{what} в договор вписали не вы — убрать {whom} может администратор или владелец")
+    shared = [code(row) for row in gone if row.share_amount is not None or row.share_percent is not None]
+    if shared:
+        what = f"У отдела {shared[0]} уже есть доля" if len(shared) == 1 else f"У отделов {', '.join(shared)} уже есть доли"
+        whom = "его" if len(shared) == 1 else "их"
+        raise PermissionError(f"{what} — убрать {whom} может администратор или владелец")
+
+
 def _label(registry: Registry, key: str, value: Any) -> str:
     """Значение поля словами — для истории: «BBCA», «500 000», «01.02.2024»."""
     if value in (None, "", []):
@@ -1925,8 +2027,8 @@ def _label(registry: Registry, key: str, value: Any) -> str:
             item = registry.values.get(uuid.UUID(str(value)))
             return item.value if item else str(value)
         if key == "department":
-            item = registry.departments.get(uuid.UUID(str(value)))
-            return item.code if item else str(value)
+            ids = [uuid.UUID(str(item)) for item in (value if isinstance(value, (list, tuple)) else [value])]
+            return ", ".join(registry.departments[item].code if item in registry.departments else str(item) for item in ids) or "—"
         if key == "people":
             found = registry.employees_for(uuid.UUID(str(item)) for item in value)
             names = [found[uuid.UUID(str(item))].full_name for item in value if uuid.UUID(str(item)) in found]
@@ -2052,10 +2154,10 @@ def create(
     session.add(contract)
     session.flush()
     defaults = _block_defaults(registry, view_key, block)
-    people: dict[str, list[Employee]] = {}
+    lists: dict[str, list[Any]] = {}
     changed: set[str] = set()
     for key, raw in defaults.items():
-        _set_field(contract, key, raw, registry, people_out=people)
+        _set_field(contract, key, raw, registry, lists_out=lists)
         changed.add(key)
     provenance = dict(contract.provenance or {})
     for key in ("billing", "economic_role"):
@@ -2066,7 +2168,7 @@ def create(
     _check_access(registry, access, user_keys)
     for key in user_keys:
         try:
-            _set_field(contract, key, values[key], registry, people_out=people, strict=True)
+            _set_field(contract, key, values[key], registry, lists_out=lists, strict=True)
         except NotInList:
             # Строка листа с «им» в статусе всё равно договор: он заводится, а
             # напечатанное остаётся замечанием у поля — ««им» нет в списке». Отказ
@@ -2080,9 +2182,10 @@ def create(
     # Договор, заведённый при узкой области строк, остаётся в этой области.
     # Иначе он пропадал у автора сразу после создания, и следующая правка поля
     # получала «Договор не найден»: «где ответственный» — автор становится
-    # ответственным, «своего отдела» — договор получает его отдел.
+    # ответственным, «своего отдела» — к отделам договора дописывается его
+    # отдел (до 30.09.2026 отдел был один и напечатанный заменялся).
     if access.rows == "own" and access.employee_id is not None:
-        listed = people.get("people")
+        listed = lists.get("people")
         if listed is None:
             listed = [
                 employee
@@ -2092,13 +2195,20 @@ def create(
         if all(employee.id != access.employee_id for employee in listed):
             author = session.get(Employee, access.employee_id)
             if author is not None:
-                people["people"] = [*listed, author]
+                lists["people"] = [*listed, author]
                 changed.add("people")
-    if access.rows == "department" and access.department_ids and contract.department_id not in access.department_ids:
-        contract.department_id = next(iter(access.department_ids))
-        changed.add("department")
-    if "people" in people:
-        _write_people(session, contract, people["people"])
+    if access.rows == "department" and access.department_ids:
+        chosen = lists.get("departments")
+        if chosen is None:
+            chosen = [registry.departments[item] for item in contract.department_ids if item in registry.departments]
+        own = [registry.departments[item] for item in access.department_ids if item in registry.departments]
+        if own and not any(item.id in access.department_ids for item in chosen):
+            lists["departments"] = [*chosen, own[0]]
+            changed.add("department")
+    if "people" in lists:
+        _write_people(session, contract, lists["people"])
+    if "departments" in lists:
+        _write_departments(contract, lists["departments"], actor.user_id)
     _finish(session, registry, contract, actor, changed | {"billing", "economic_role", "end_kind"})
     history.write(
         session,
@@ -2107,7 +2217,7 @@ def create(
         entity="contract",
         entity_id=contract.id,
         title=_history_title(registry, {}, {}, f"договор заведён {contract.number or ''}".strip()),
-        after={key: value_of(contract, key, [e.id for e in people.get("people", [])]) for key in changed},
+        after={key: value_of(contract, key, [e.id for e in lists.get("people", [])]) for key in changed},
         actor=actor.email,
     )
     return contract
@@ -2189,6 +2299,9 @@ def patch(
     _check_access(registry, access, keys)
     for key in keys:
         registry.check_closed(key, values[key], other_own=_other_own(registry, contract, key, values))
+    if "department" in values:
+        wanted = registry.input_departments(values["department"], closed=registry.fill("department") == "list")
+        _check_departments_kept(access, registry, contract, wanted, actor.user_id)
     if known_seq is not None:
         field_seq = contract.field_seq or {}
         conflicts = [key for key in keys if int(field_seq.get(key, 0)) > known_seq]
@@ -2203,17 +2316,20 @@ def patch(
         raise ModeRequired(moded)
     dated = mode is not None and mode.kind == "from_date"
 
-    people: dict[str, list[Employee]] = {}
+    lists: dict[str, list[Any]] = {}
     touched: set[str] = set()
     for key in keys:
         if dated and key in moded:
             continue
-        _set_field(contract, key, values[key], registry, people_out=people, strict=True)
+        _set_field(contract, key, values[key], registry, lists_out=lists, strict=True)
         if key in DERIVED:
             contract.provenance = {**(contract.provenance or {}), key: "manual"}
         touched.add(key)
-    if "people" in people:
-        _write_people(session, contract, people["people"])
+    if "people" in lists:
+        _write_people(session, contract, lists["people"])
+        session.flush()
+    if "departments" in lists:
+        _write_departments(contract, lists["departments"], actor.user_id)
         session.flush()
 
     amended: set[str] = set()
@@ -2224,7 +2340,7 @@ def patch(
             if amendment.applied_at is not None:
                 touched.add(key)
     _derive(contract, registry, touched)
-    after_people = [e.id for e in people["people"]] if "people" in people else people_now
+    after_people = [e.id for e in lists["people"]] if "people" in lists else people_now
     after = {key: value_of(contract, key, after_people) for key in tracked}
     real = {key for key in tracked if after[key] != before[key]}
     if not real and not amended:
@@ -2303,7 +2419,7 @@ def _amend(
     """
     before_value = value_of(contract, key)
     scratch = Contract(attrs={}, provenance={}, file_snapshot={})
-    _set_field(scratch, key, raw, registry, people_out={}, strict=True)
+    _set_field(scratch, key, raw, registry, lists_out={}, strict=True)
     after_value = value_of(scratch, key)
     effect = key if key in ("executor", "customer", "amount") else "other"
     amendment = ContractAmendment(

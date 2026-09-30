@@ -96,8 +96,8 @@ def _text(registry: Registry, contract: Contract, key: str, people: Sequence[uui
         value = registry.values.get(value_id) if value_id else None
         return value.value if value else None
     if key == "department":
-        department = registry.departments.get(contract.department_id) if contract.department_id else None
-        return department.code if department else None
+        codes = [registry.departments[item].code for item in contract.department_ids if item in registry.departments]
+        return ", ".join(codes) or None
     if key == "people":
         names = [registry.employees[item].full_name for item in people if item in registry.employees]
         return ", ".join(names) or None

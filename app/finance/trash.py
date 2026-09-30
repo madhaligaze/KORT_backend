@@ -37,6 +37,7 @@ from app.finance.accounts_model import FinanceUser
 from app.finance.contracts.fields import bump
 from app.finance.contracts.models import (
     Contract,
+    ContractDepartment,
     ContractPerson,
     Department,
     Employee,
@@ -160,7 +161,11 @@ def _value_blocked(session: Session, item: ListValue) -> str:
 
 
 def _department_blocked(session: Session, item: Department) -> str:
-    contracts = _used_in_contracts(session, item.workspace_id, Contract.department_id == item.id)
+    contracts = _used_in_contracts(
+        session,
+        item.workspace_id,
+        Contract.id.in_(sa.select(ContractDepartment.contract_id).where(ContractDepartment.department_id == item.id)),
+    )
     staff = _count(
         session,
         sa.select(sa.func.count())

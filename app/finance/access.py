@@ -202,6 +202,9 @@ class Rights:
     department_id: uuid.UUID | None = None
     #: «Сотрудники и права»: `all` — все люди компании, `department` — свой отдел.
     people_rows: str = "all"
+    #: Начальник видит доли отделов в договорах своего отдела — пока
+    #: администратор не снял (`scope.shares = false` у права «Сотрудники и права»).
+    people_shares: bool = True
 
     @property
     def is_admin(self) -> bool:
@@ -383,6 +386,7 @@ def compute(
     departments = _uuids(scope.get("departments")) if rows_scope != "all" else set()
     people_scope = merged.get("people", ("none", {}))[1]
     people_rows = people_scope.get("rows") if people_scope.get("rows") in PEOPLE_SCOPES else "all"
+    people_shares = people_scope.get("shares") is not False
     return Rights(
         role=role,
         levels=MappingProxyType(levels),
@@ -393,6 +397,7 @@ def compute(
         employee_id=employee_id,
         department_id=department_id,
         people_rows=people_rows,
+        people_shares=people_shares,
     )
 
 
@@ -564,7 +569,12 @@ def clean_scope(session: Session, workspace_id: uuid.UUID, raw: Any) -> dict[str
 
 
 def clean_people_scope(raw: Any) -> dict[str, Any]:
-    """Чьих сотрудников: всех (записи нет) или своего отдела."""
+    """Чьих сотрудников: всех (записи нет) или своего отдела.
+
+    У начальника отдела (`rows = department`) ещё `shares: False` — доли отделов
+    в договорах ему не показывать. Нет пометки — видит: так решил владелец
+    30.09.2026, снимает её администратор в «Правах отдела».
+    """
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict):
@@ -572,7 +582,9 @@ def clean_people_scope(raw: Any) -> dict[str, Any]:
     rows = raw.get("rows", "all")
     if rows not in PEOPLE_SCOPES:
         raise GrantError("Чьих сотрудников: всех или своего отдела")
-    return {"rows": rows} if rows != "all" else {}
+    if rows == "all":
+        return {}
+    return {"rows": rows, "shares": False} if raw.get("shares") is False else {"rows": rows}
 
 
 _ROW_RANK = {"own": 0, "department": 1, "all": 2}
@@ -766,6 +778,10 @@ def describe_change(resource: str, before: dict | None, after: dict | None, kind
     now = LEVEL_TITLES.get(after.get("level"), "Нет") if after else missing
     title = resource_title(resource)
     if before and after and before.get("level") == after.get("level"):
+        sees_before = (before.get("scope") or {}).get("shares") is not False
+        sees_after = (after.get("scope") or {}).get("shares") is not False
+        if resource == "people" and sees_before != sees_after:
+            return f"{title}: доли отделов — {'видит' if sees_after else 'не видит'}"
         return f"{title}: область изменена"
     return f"{title} — {was} → {now}"
 

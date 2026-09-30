@@ -26,6 +26,7 @@
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -110,8 +111,9 @@ def _current(registry: service.Registry, contract: Contract, key: str, parties: 
         value = registry.values.get(getattr(contract, f"{key}_id")) if raw else None
         return value.value if value else ""
     if key == "department":
-        item = registry.departments.get(contract.department_id) if contract.department_id else None
-        return item.code if item else ""
+        return ", ".join(
+            registry.departments[item].code for item in contract.department_ids if item in registry.departments
+        )
     if key == "people":
         return ", ".join(people.get(contract.id, []))
     field = registry.field_by_key.get(key)
@@ -120,6 +122,10 @@ def _current(registry: service.Registry, contract: Contract, key: str, parties: 
         names = [registry.values[uuid.UUID(str(item))].value for item in ids if uuid.UUID(str(item)) in registry.values]
         return ", ".join(names)
     return raw
+
+
+def _codes(text: Any) -> set[str]:
+    return {norm(part) for part in re.split(r"[,;\n/]+", str(text or "")) if part.strip()}
 
 
 def _same(registry: service.Registry, key: str, current: Any, incoming: Any) -> bool:
@@ -143,6 +149,9 @@ def _same(registry: service.Registry, key: str, current: Any, incoming: Any) -> 
         return party_key(current) == party_key(incoming)
     if key == "number":
         return number_key(current) == number_key(incoming)
+    if key == "department":
+        # «ЮО, HR» и «HR, ЮО» — одни и те же отделы: список, а не текст.
+        return _codes(current) == _codes(incoming)
     if isinstance(current, bool):
         return current == (str(incoming).strip().lower() in ("1", "true", "да", "yes", "истина"))
     return norm(str(current or "")) == norm(str(incoming or ""))

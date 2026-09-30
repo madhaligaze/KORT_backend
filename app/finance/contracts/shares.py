@@ -29,12 +29,24 @@
 * Остальные — только свою долю, если стоят ответственными. Чужих сумм в
   ответе нет вовсе, а не спрятано в интерфейсе: иначе их было бы видно в
   инструментах браузера.
-* Доли отделов — администратору и начальнику отдела, у которого в договорах
-  «включено всё» (правит, все договоры, без ограничения юрлиц).
+* Доли отделов видят администратор, владелец и начальник отдела — в
+  договорах, где стоит его отдел (с полным правом на договоры — во всех),
+  пока администратор не снял ему «видит доли отделов» в «Правах отдела»
+  (30.09.2026: по умолчанию видит). Правят — администратор и начальник, у
+  которого в договорах «включено всё» (правит, все договоры, без ограничения
+  юрлиц).
 
 Поэтому доли не входят в ответ реестра (он общий на одинаковые права,
 `SharedBuild`), а приходят своим запросом. И в «Историю» договора события
 долей попадают только тем, кому доли открыты (`hidden_history`).
+
+Отделы долей — это поле «Отдел»
+───────────────────────────────
+С 30.09.2026 отделы договора — один список (`Contract.department_rows`), как
+люди в «Ответственном лице»: разнесли доли между HR и ЮО — поле стало «HR,
+ЮО»; вписали в поле «ОБО, НО, ЮО, HR» — у договора четыре отдела, доли пока не
+указаны. Главного отдела нет. Убрать отдел из списка может только
+администратор или владелец — и здесь, и в самом поле.
 """
 from __future__ import annotations
 
@@ -54,8 +66,10 @@ from app.finance.contracts.service import (
     Actor,
     NotFound,
     Registry,
+    _check_departments_kept,
     _check_write,
     _finish,
+    _history_title,
     get_contract,
     people_of,
     read_money,
@@ -111,12 +125,12 @@ def heads_contract(
     people: Sequence[uuid.UUID],
     co: Sequence[uuid.UUID] = (),
 ) -> bool:
-    """Договор отдела, которым человек руководит: по отделу договора,
-    отделу-соисполнителю или отделу кого-то из ответственных."""
+    """Договор отдела, которым человек руководит: его отдел в списке отделов
+    договора или в отделе кого-то из ответственных."""
     head = access.head_department
     if head is None:
         return False
-    if contract.department_id == head or head in co:
+    if head in contract.department_ids or head in co:
         return True
     return head in _departments_of_people(registry, people)
 
@@ -136,8 +150,26 @@ def people_scope(
     return "none"
 
 
-def departments_open(access: Access) -> bool:
-    return access.admin or (access.head_department is not None and access.full_contracts)
+def departments_open(access: Access, contract: Contract | None = None) -> bool:
+    """Видны ли доли отделов договора.
+
+    Администратору и владельцу — всегда. Начальнику — пока администратор не
+    снял «видит доли отделов» (по умолчанию видит, решение владельца
+    30.09.2026): с полным правом на договоры — во всех, иначе — в договорах,
+    где стоит его отдел, в том числе совместных.
+    """
+    if access.admin:
+        return True
+    if access.head_department is None or not access.head_shares:
+        return False
+    if access.full_contracts:
+        return True
+    return contract is not None and access.head_department in contract.department_ids
+
+
+def departments_editable(access: Access) -> bool:
+    """Править доли отделов — администратор и начальник с полным правом на договоры."""
+    return access.admin or (access.head_department is not None and access.head_shares and access.full_contracts)
 
 
 def hidden_history(
@@ -149,7 +181,7 @@ def hidden_history(
     hidden: set[str] = set()
     if people_scope(access, contract, registry, people, co) != "all":
         hidden.add(PEOPLE_KIND)
-    if not departments_open(access):
+    if not departments_open(access, contract):
         hidden.add(DEPARTMENTS_KIND)
     return frozenset(hidden)
 
@@ -262,16 +294,6 @@ def _people_rows(session: Session, contract_id: uuid.UUID) -> list[ContractPerso
     )
 
 
-def _department_rows(session: Session, contract_id: uuid.UUID) -> list[ContractDepartment]:
-    return list(
-        session.scalars(
-            sa.select(ContractDepartment)
-            .where(ContractDepartment.contract_id == contract_id)
-            .order_by(ContractDepartment.position)
-        )
-    )
-
-
 def _load(
     session: Session, workspace: Workspace, access: Access, contract_id: uuid.UUID, *, for_update: bool = False
 ) -> tuple[Registry, Contract, list[uuid.UUID], list[uuid.UUID]]:
@@ -336,9 +358,9 @@ def _out(
     if scope == "all":
         people_out["summary"] = _group(total, person_rows)
     departments_out: dict[str, Any] | None = None
-    if departments_open(access):
+    if departments_open(access, contract):
         rows: list[dict[str, Any]] = []
-        stored = _department_rows(session, contract.id)
+        stored = contract.department_rows
         taken = {row.department_id for row in stored}
         for row in stored:
             department = registry.departments.get(row.department_id)
@@ -348,7 +370,6 @@ def _out(
                     "department_id": str(row.department_id),
                     "code": department.code if department else "",
                     "title": (department.title or department.code) if department else "",
-                    "main": row.department_id == contract.department_id,
                     "amount": _money_text(amount),
                     "percent": _percent_text(percent),
                     "entered": entered,
@@ -357,11 +378,13 @@ def _out(
                 }
             )
         departments_out = {
-            "can_edit": writable,
+            "can_edit": writable and departments_editable(access),
+            # Убрать любой отдел — администратор или владелец; сотрудник — только
+            # вписанный им самим и без доли (это фронт знает по `departments_by`).
+            "can_remove": writable and access.admin,
             "unit": _unit_of(rows),
             "rows": _clean(rows),
             "summary": _group(total, rows),
-            "main": str(contract.department_id) if contract.department_id else None,
             "choices": [
                 {"id": str(item.id), "code": item.code, "title": item.title or item.code}
                 for item in sorted(registry.departments.values(), key=lambda item: item.position)
@@ -532,13 +555,18 @@ def set_departments(
     unit_raw: Any,
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Отделы договора и их доли — список целиком: не названный отдел уходит из договора."""
-    if not departments_open(access):
+    """Отделы договора и их доли — список целиком: не названный отдел уходит из договора.
+
+    Список отделов — это и поле «Отдел»: его перемена пишется в «Историю» как
+    правка поля, видимая всем, кому открыт договор, а суммы — отдельным
+    событием долей, только тем, кому доли открыты.
+    """
+    if not departments_editable(access):
         raise PermissionError("Доли отделов распределяет администратор или начальник отдела с полным правом на договоры")
     registry, contract, people, co = _load(session, workspace, access, contract_id, for_update=True)
     _check_write(contract, registry, access, people)
     unit = _unit(unit_raw)
-    current = {row.department_id: row for row in _department_rows(session, contract.id)}
+    current = {row.department_id: row for row in contract.department_rows}
     wanted: list[tuple[Department, Decimal | None, Decimal | None]] = []
     seen: set[uuid.UUID] = set()
     for item in items or []:
@@ -556,40 +584,58 @@ def set_departments(
         wanted.append((department, amount, percent))
     values = [amount if unit == "amount" else percent for _dep, amount, percent in wanted]
     _check_sum(contract.amount, unit, [value for value in values if value is not None], "Доли отделов")
+    _check_departments_kept(access, registry, contract, [department for department, _a, _p in wanted], actor.user_id)
+    list_before = [str(item) for item in contract.department_ids]
     before = {
         str(department_id): _snapshot(contract.amount, row.share_amount, row.share_percent)
         for department_id, row in current.items()
     }
-    for department_id, row in current.items():
-        if department_id not in seen:
-            session.delete(row)
-    session.flush()
+    rows: list[ContractDepartment] = []
     for index, (department, amount, percent) in enumerate(wanted):
-        row = current.get(department.id)
-        if row is None:
-            row = ContractDepartment(contract_id=contract.id, department_id=department.id)
-            session.add(row)
+        row = current.get(department.id) or ContractDepartment(department_id=department.id, added_by=actor.user_id)
         row.share_amount = amount
         row.share_percent = percent
         row.position = index
+        rows.append(row)
+    contract.department_rows = rows
     session.flush()
+    list_after = [str(item) for item in contract.department_ids]
     after = {
         str(department.id): _snapshot(contract.amount, amount, percent) for department, amount, percent in wanted
     }
-    if before != after:
-        _finish(session, registry, contract, actor, [])
-        codes = ", ".join(department.code for department, _a, _p in wanted) or "—"
-        history.write(
-            session,
-            workspace,
-            kind=DEPARTMENTS_KIND,
-            entity="contract",
-            entity_id=contract.id,
-            title=f"договор {contract.number or ''} · отделы в договоре: {codes}".replace("  ", " "),
-            before={"department_shares": before},
-            after={"department_shares": after},
-            actor=actor.email,
-        )
+    if before != after or list_before != list_after:
+        _finish(session, registry, contract, actor, ["department"] if list_before != list_after else [])
+        if list_before != list_after:
+            # Поле «Отдел» поменялось — это видят все, кому открыт договор.
+            history.write(
+                session,
+                workspace,
+                kind="contract.update",
+                entity="contract",
+                entity_id=contract.id,
+                title=_history_title(
+                    registry,
+                    {"department": list_before},
+                    {"department": list_after},
+                    f"договор {contract.number or ''}".strip(),
+                ),
+                before={"department": list_before},
+                after={"department": list_after},
+                actor=actor.email,
+            )
+        if before != after:
+            codes = ", ".join(department.code for department, _a, _p in wanted) or "—"
+            history.write(
+                session,
+                workspace,
+                kind=DEPARTMENTS_KIND,
+                entity="contract",
+                entity_id=contract.id,
+                title=f"договор {contract.number or ''} · отделы в договоре: {codes}".replace("  ", " "),
+                before={"department_shares": before},
+                after={"department_shares": after},
+                actor=actor.email,
+            )
     co = [department.id for department, _a, _p in wanted]
     return _out(session, registry, access, contract, people, co)
 
@@ -601,6 +647,7 @@ __all__ = [
     "UNITS",
     "all_visible",
     "co_departments",
+    "departments_editable",
     "departments_open",
     "heads_contract",
     "hidden_history",

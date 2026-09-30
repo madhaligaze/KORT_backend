@@ -64,6 +64,7 @@ from app.finance.contracts.service import (
     _derive,
     _plain,
     _set_field,
+    _write_departments,
     looks_numeric,
     read_money,
 )
@@ -1102,10 +1103,13 @@ def _section_statuses(current: Plan, registry: Registry, decisions: dict[str, An
     for field_key in ("status", "type", "department"):
         for value, count in _values_of(rows, field_key).most_common():
             if field_key == "department":
-                existing = registry.resolve_department(value, create=False)
+                # «ОБО, НО, ЮО, HR» — несколько отделов (у договора «4 в 1»), а не
+                # подсказка из шапки: до 30.09.2026 такое значение откладывалось
+                # текстом, и договор стоял без отдела.
+                parts = [part.strip() for part in re.split(r"[,;\n/]+", value) if part.strip()]
                 meaning: dict[str, Any] = {}
-                known = existing is not None
-                odd = bool(re.search(r"[,;\n]", value))
+                known = bool(parts) and all(registry.resolve_department(part, create=False) is not None for part in parts)
+                odd = False
             else:
                 existing = registry.resolve_value(field_key, value, create=False)
                 meaning = dict(existing.meaning or {}) if existing is not None else {}
@@ -1884,7 +1888,6 @@ def _contract_from_row(
         subject_id=None,
         status_id=None,
         economic_role_id=None,
-        department_id=None,
         billing="",
         amount=None,
         amount_terms="",
@@ -1911,7 +1914,7 @@ def _contract_from_row(
         updated_at=now,
         deleted_at=None,
     )
-    people: dict[str, list[Employee]] = {}
+    lists: dict[str, list[Any]] = {}
     changed: set[str] = set()
     for key, raw in values.items():
         if key in SNAPSHOT_FIELDS:
@@ -1922,12 +1925,8 @@ def _contract_from_row(
                 contract.attrs = {**(contract.attrs or {}), field_key: str(raw)}
                 changed.add(field_key)
             continue
-        if key == "department" and re.search(r"[,;\n]", str(raw)):
-            # «ОБО, НО, ЮО, HR» — не отдел, а подсказка из шапки: не угадываем.
-            _keep_raw(contract, key, raw)
-            continue
         try:
-            _set_field(contract, key, raw, registry, people_out=people)
+            _set_field(contract, key, raw, registry, lists_out=lists)
         except FinanceError:
             # Одна нечитаемая ячейка («12q» в дате) не роняет строку: договор
             # заводится, текст сохраняется, у договора — замечание.
@@ -1936,13 +1935,16 @@ def _contract_from_row(
         changed.add(key)
     if snapshot:
         contract.file_snapshot = {**snapshot, "as_of": now.date().isoformat(), "file": batch.file_name}
+    # Отделы — строками при договоре: `apply` вставит их той же пачкой.
+    if lists.get("departments"):
+        _write_departments(contract, lists["departments"], actor.user_id)
     _derive(contract, registry, changed | {"type", "subject", "executor", "customer", "end_date"})
     if end_kind in ("terminated", "fulfilled", "unknown") and contract.end_date is not None:
         contract.end_kind = end_kind
         contract.provenance = {**(contract.provenance or {}), "end_kind": "manual"}
     # Номер изменения проставит `_stamp_seq` всей партии; ключи — уже сейчас.
     contract.field_seq = {key: 0 for key in sorted(changed | {"billing", "economic_role", "end_kind"})}
-    return contract, list(people.get("people") or [])
+    return contract, list(lists.get("people") or [])
 
 
 def _stamp_seq(session: Session, workspace_id: uuid.UUID, batch_id: uuid.UUID, seq: int) -> None:

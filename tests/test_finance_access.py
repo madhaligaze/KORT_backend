@@ -525,7 +525,7 @@ def test_zavedyonnyy_dogovor_ostayotsya_v_svoey_oblasti(app: FastAPI) -> None:
 
     for phone, key, expected in (
         ("+77021110001", "people", [own_card["id"]]),
-        ("+77021110002", "department", yuo),
+        ("+77021110002", "department", [yuo]),
     ):
         person = activate(app, phone)
         made = person.post(f"{BASE}/contracts", json={"values": {"number": f"Н-{phone[-2:]}"}})

@@ -149,7 +149,13 @@ def schema(session: Session, workspace: Workspace, access: Access) -> dict[str, 
         "today": today().isoformat(),
         # `payments` — открыты ли «Оплачено/Остаток по выписке» (нужен журнал):
         # без флага лист спрашивал их у каждого юриста и получал 403 в консоль.
-        "access": {"edit": access.edit, "setup": access.setup, "payments": access.view and "paid" not in access.hidden},
+        # `admin` — владелец или администратор: убрать отдел из договора может только он.
+        "access": {
+            "edit": access.edit,
+            "setup": access.setup,
+            "admin": access.admin,
+            "payments": access.view and "paid" not in access.hidden,
+        },
     }
 
 
