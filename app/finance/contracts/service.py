@@ -1292,6 +1292,16 @@ def _short_name(user: FinanceUser | None) -> str:
     return parts[0]
 
 
+def _uuids(raw: Iterable[Any]) -> list[uuid.UUID]:
+    out: list[uuid.UUID] = []
+    for item in raw:
+        try:
+            out.append(uuid.UUID(str(item)))
+        except ValueError:
+            continue
+    return out
+
+
 class Output:
     """Сборщик ответа: договоры, стороны, люди - с учётом прав."""
 
@@ -1338,6 +1348,13 @@ class Output:
             for item in registry.fields
             if item.key not in self.access.hidden
         ]
+        # Доля отдела книги («Разовые ЮО» - доля ЮО, `shares.py`) - тем, кому
+        # открыта сумма договора. Модуль долей импортирует этот, поэтому здесь.
+        from app.finance.contracts.shares import book_shares
+
+        book_departments = (
+            [] if "amount" in self.access.hidden else _uuids(views_module.book_departments(registry.views).values())
+        )
         out: list[dict[str, Any]] = []
         for item in contracts:
             if not visible_to(item, registry, self.access, people.get(item.id, [])):
@@ -1370,6 +1387,12 @@ class Output:
                     **(
                         {"departments_by": by}
                         if (by := {str(row.department_id): str(row.added_by) for row in item.department_rows if row.added_by})
+                        else {}
+                    ),
+                    # Одно на всех зрителей, как и сумма договора.
+                    **(
+                        {"department_share": share}
+                        if book_departments and (share := book_shares(item, book_departments))
                         else {}
                     ),
                     # Договор «другого отдела»: виден, правка - отказ сервера.

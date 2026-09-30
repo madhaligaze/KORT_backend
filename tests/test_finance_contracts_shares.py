@@ -288,6 +288,56 @@ def test_doli_otdelov_tolko_nachalniku_s_polnym_pravom(app: FastAPI) -> None:
     assert cleared.status_code == 200 and cleared.json()["departments"]["rows"] == []
 
 
+def _oneoff_only(owner: TestClient, department_id: str) -> None:
+    """Книга «Разовые» - только договоры отдела, как на проде после 0024:
+    «отдел - …» в каждой группе каждого блока."""
+    for view in owner.get(f"{BASE}/contracts/schema").json()["views"]:
+        if view.get("book") != "oneoff":
+            continue
+        blocks = [
+            {
+                **block,
+                "filter": {
+                    "any": [
+                        {"all": [*group["all"], {"field": "department", "op": "in", "value": [department_id]}]}
+                        for group in block["filter"]["any"]
+                    ]
+                },
+            }
+            for block in view["blocks"]
+        ]
+        response = owner.patch(f"{BASE}/contracts/setup/views/{view['id']}", json={"blocks": blocks})
+        assert response.status_code == 200, response.text
+
+
+def test_dolya_otdela_knigi_vidna_vsem_komu_otkryt_dogovor(app: FastAPI) -> None:
+    """30.09: в «Разовых ЮО» №ОКР/59 на 348 000 (HR 70% / ЮО 30%) стоял 348 000.
+    Юристы и финансисты просили видеть долю юротдела - 104 400, и юристу без
+    права на доли отделов она тоже приходит. Долей других отделов в ответе нет."""
+    team, _ids, yuo, no = _team(app)
+    owner = team["owner"]
+    split = _contract(owner, "ОКР/59", amount="348000", people="Юристов Тимур", type="Разовая услуга", status="На исполнении")
+    alone = _contract(owner, "ЮО/60", amount="200000", people="Юристов Тимур", type="Разовая услуга", status="На исполнении")
+    assert _put(owner, split, "percent", [(no, "70"), (yuo, "30")], kind="departments").status_code == 200
+
+    def listed(who: TestClient) -> dict[str, dict]:
+        return {item["id"]: item for item in who.get(f"{BASE}/contracts").json()["contracts"]}
+
+    # Книга «Разовые» не про один отдел - доли в ответе нет ни у кого.
+    assert "department_share" not in listed(owner)[split]
+    _oneoff_only(owner, yuo)
+    assert _shares(team["first"], split)["departments"] is None
+    for who in (owner, team["first"]):
+        items = listed(who)
+        assert items[split]["department_share"] == {yuo: {"amount": "104400.00", "percent": "30"}}
+        assert any(place["view"] == "oneoff" for place in items[split]["views"])
+        # Договор одного отдела - у отдела целиком, доли не нужно.
+        assert "department_share" not in items[alone]
+    # Сумма договора подорожала - доля в процентах следом.
+    assert _edit(owner, split, amount="400000").status_code == 200
+    assert listed(team["first"])[split]["department_share"][yuo]["amount"] == "120000.00"
+
+
 # ── «Отдел» - список, общий с долями отделов (30.09.2026) ────────────────────
 
 

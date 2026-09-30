@@ -85,8 +85,25 @@ WIDTH_CAP = {"index": 8.0, "date": 12.0, "money": 18.0, "link": 22.0, "text": 42
 _LINK = re.compile(r"^https?://\S+$")
 
 
-def _text(registry: Registry, contract: Contract, key: str, people: Sequence[uuid.UUID]) -> Any:
-    """Значение ячейки выгрузки: так, как его пишут в реестре."""
+def _text(
+    registry: Registry,
+    contract: Contract,
+    key: str,
+    people: Sequence[uuid.UUID],
+    share: shares_module.BookShare | None = None,
+) -> Any:
+    """Значение ячейки выгрузки: так, как его пишут в реестре.
+
+    `share` - доля отдела книги («Разовые ЮО»): «Сумма» - доля, «Оплачено» и
+    «Остаток» - той же частью договора (`shares.book_share`).
+    """
+    if key == "amount" and share is not None and share.kind == "share":
+        return float(share.amount) if share.amount is not None else contract.amount_terms or None
+    if key in ("summary_paid", "summary_remaining") and share is not None and share.kind == "share":
+        whole = _text(registry, contract, key, people)
+        if whole is None or share.fraction is None:
+            return None
+        return round(whole * float(share.fraction), 2)
     if key in ("executor", "customer"):
         party_id = contract.executor_id if key == "executor" else contract.customer_id
         party = registry.parties.get(party_id) if party_id else None
@@ -200,9 +217,12 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
     views: list[EntityView] = [
         view for view in registry.views if (view.key in view_keys if view_keys else not view.book)
     ]
+    # Книга одного отдела («Разовые ЮО») - суммы долей этого отдела, как на экране.
+    book_departments = views_module.book_departments(registry.views) if "amount" not in hidden else {}
     book = Workbook(write_only=True)
     taken_titles: list[str] = []
     for view in views:
+        department = _uuid(book_departments.get(view.book or ""))
         title = _sheet_title(view.title, taken_titles)
         taken_titles.append(title)
         sheet = book.create_sheet(title=title)
@@ -233,6 +253,7 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
             rows = []
             for position, item in enumerate(members[number], start=1):
                 mine = people.get(item.id, [])
+                share = shares_module.book_share(item, department) if department is not None else None
                 row: list[Any] = []
                 for column in layouts[number]:
                     key = column["key"]
@@ -243,7 +264,7 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
                     elif key == SHARES_KEY:
                         row.append(_shares_text(shares.get(str(item.id)), mine, registry, item.amount))
                     else:
-                        row.append(_text(registry, item, key, mine))
+                        row.append(_text(registry, item, key, mine, share))
                 rows.append(row)
             values.append(rows)
 
@@ -278,7 +299,7 @@ def build(session: Session, workspace: Workspace, access: Access, actor: Actor, 
             if block.get("title"):
                 line += 1
                 sheet.row_dimensions[line].height = 22.0
-                sheet.append([None, styles.cell(block["title"], "title")])
+                sheet.append([None, styles.cell(_block_title(block["title"], columns, values[number]), "title")])
             labels = [column.get("label") or _title(registry, column["key"]) for column in columns]
             lines = max(
                 (
@@ -390,6 +411,31 @@ def _grouped(value: float) -> str:
     """500000 → «500 000», 1234,5 → «1 234,5» - как в листе."""
     text = f"{value:,.2f}".rstrip("0").rstrip(".")
     return text.replace(",", " ").replace(".", ",")
+
+
+def _block_title(title: str, columns: Sequence[dict[str, Any]], rows: Sequence[Sequence[Any]]) -> str:
+    """Название части с итогом, как в книге юротдела: «Работа идёт - есть
+    остаток · договоров: 19 · остаток: 2 525 754 ₸».
+
+    Только у частей с колонкой «Остаток (сводка)» («Остатки» «Разовых»): их
+    итог и просили. Выгрузку реестра загружают обратно, и «АРЕНДА ·
+    договоров: 3» стало бы там названием части - у реестра название чистое.
+    """
+    at = next((index for index, column in enumerate(columns) if column.get("key") == "summary_remaining"), None)
+    if at is None:
+        return title
+    out = f"{title} · договоров: {len(rows)}"
+    known = [row[at] for row in rows if isinstance(row[at], (int, float))]
+    if known:
+        out += f" · остаток: {_grouped(round(sum(known), 2))} ₸"
+    return out
+
+
+def _uuid(raw: Any) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(raw)) if raw else None
+    except ValueError:
+        return None
 
 
 def _kind(registry: Registry, key: str) -> str:

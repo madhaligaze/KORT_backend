@@ -35,6 +35,9 @@
   (30.09.2026: по умолчанию видит). Правят - администратор и начальник, у
   которого в договорах «включено всё» (правит, все договоры, без ограничения
   юрлиц).
+* Исключение - доля отдела, которым отобрана книга: в «Разовых ЮО» сумма
+  договора - доля ЮО, и её видят все, кому открыт договор (ниже, «Доля
+  отдела книги»).
 
 Поэтому доли не входят в ответ реестра (он общий на одинаковые права,
 `SharedBuild`), а приходят своим запросом. И в «Историю» договора события
@@ -279,6 +282,73 @@ def _unit_of(rows: Iterable[dict[str, Any]]) -> str | None:
 
 def _clean(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: value for key, value in row.items() if not key.startswith("_")} for row in rows]
+
+
+# ── Доля отдела книги ────────────────────────────────────────────────────────
+#
+# 30.09.2026, юристы и финансисты BBC: в «Разовых ЮО» (карточки, таблица,
+# выгрузка) сумма договора - доля ЮО. №ОКР/59 на 348 000 разделён HR 70% /
+# ЮО 30%, а в списке стояло 348 000; нужно 104 400. В карточке договора сумма
+# остаётся целой. Книга «про отдел», если все её листы отобраны одним отделом
+# (`views.book_department`).
+#
+# Долю этого отдела ответ реестра несёт всем, кому открыт договор, - и юристу
+# без права на доли отделов: об этом и просили («видеть долю Юридического
+# отдела»). Долей других отделов в ответе нет.
+#
+# «Оплачено» и «Остаток» из сводки - та же часть договора: клиент платит за
+# договор целиком, и отделу приходится его доля платежа. Так же «По
+# сотрудникам» считает остаток у человека с долей (`staff.ts`).
+
+
+def department_share(contract: Contract, department_id: uuid.UUID) -> tuple[Decimal | None, Decimal | None] | None:
+    """Доля отдела в договоре - (сумма, процент), если она задана; иначе `None`."""
+    for row in contract.department_rows:
+        if row.department_id == department_id and (row.share_amount is not None or row.share_percent is not None):
+            amount, percent, _entered = _pair(contract.amount, row.share_amount, row.share_percent)
+            return amount, percent
+    return None
+
+
+def book_shares(contract: Contract, departments: Iterable[uuid.UUID]) -> dict[str, dict[str, str | None]]:
+    """Доли отделов книг в договоре - для ответа реестра: отдел → сумма и процент."""
+    out: dict[str, dict[str, str | None]] = {}
+    for department_id in departments:
+        share = department_share(contract, department_id)
+        if share is not None:
+            out[str(department_id)] = {"amount": _money_text(share[0]), "percent": _percent_text(share[1])}
+    return out
+
+
+@dataclass(frozen=True)
+class BookShare:
+    """Сколько договора у отдела книги.
+
+    `amount` - что стоит в «Сумме»; `fraction` - часть договора для «Оплачено»
+    и «Остатка» (`None` - не посчитать: доля суммой у договора без суммы);
+    `kind`: `share` - доля задана, `whole` - отдел в договоре один, `unset` -
+    отделов несколько, а доли этого нет. Тогда, как у «По сотрудникам»,
+    договор у отдела целиком, а лист и выгрузка говорят, что доля не задана.
+    """
+
+    amount: Decimal | None
+    fraction: Decimal | None
+    kind: str
+
+
+def book_share(contract: Contract, department_id: uuid.UUID) -> BookShare:
+    total = contract.amount
+    share = department_share(contract, department_id)
+    if share is not None:
+        amount, percent = share
+        if percent is not None:
+            fraction: Decimal | None = percent / _HUNDRED
+        elif amount is not None and total:
+            fraction = amount / total
+        else:
+            fraction = None
+        return BookShare(amount, fraction, "share")
+    return BookShare(total, Decimal(1), "whole" if len(contract.department_ids) <= 1 else "unset")
 
 
 # ── Чтение ───────────────────────────────────────────────────────────────────
@@ -641,12 +711,16 @@ def set_departments(
 
 
 __all__ = [
+    "BookShare",
     "DEPARTMENTS_KIND",
     "PEOPLE_KIND",
     "SharesError",
     "UNITS",
     "all_visible",
+    "book_share",
+    "book_shares",
     "co_departments",
+    "department_share",
     "departments_editable",
     "departments_open",
     "heads_contract",

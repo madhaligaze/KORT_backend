@@ -253,6 +253,88 @@ def test_razovye_tolko_dva_statusa(space):
         assert all("main" in views for views in places.values())
 
 
+def test_razovye_otdela_summa_i_ostatok_dolej(space):
+    """30.09.2026: в «Разовых ЮО» №ОКР/59 на 348 000 (HR 70% / ЮО 30%) стоял
+    суммой 348 000. Юротделу нужна своя доля - 104 400, «Оплачено» и «Остаток» -
+    той же долей, а в названии части «Остатков» - итог, как в книге юротдела:
+    «· договоров: N · остаток: … ₸»."""
+    import io
+
+    from openpyxl import load_workbook
+
+    from app.finance.contracts import shares
+
+    admin = service.Access(view=True, edit=True, setup=True, admin=True)
+    with finance_session() as session:
+        workspace = _ws(session, space)
+        yuo = setup.upsert_department(session, workspace, {"code": "ЮО"})
+        hr = setup.upsert_department(session, workspace, {"code": "HR"})
+        yuo_id = str(yuo.id)
+        signed = (service.today() - timedelta(days=20)).isoformat()
+        common = {"executor": "BBC legal support", "type": "Разовая услуга", "status": "На исполнении", "signed_at": signed}
+        split = _make(session, space, customer="ТОО Акжол", number="№ОКР/59", amount="348000", department="ЮО", **common)
+        _make(session, space, customer="ТОО Альфа", number="№ЮО/1", amount="150000", department="ЮО", **common)
+        _make(session, space, customer="ТОО Бета", number="№ЮО/2", amount="90000", department="ЮО, HR", **common)
+        shares.set_departments(
+            session, workspace, admin, OWNER, split.id, "percent",
+            [{"department_id": str(hr.id), "value": "70"}, {"department_id": str(yuo.id), "value": "30"}],
+        )
+        # Книга «Разовые» - только ЮО, как на проде после 0024.
+        registry = service.Registry(session, workspace)
+        assert views.book_departments(registry.views) == {}
+        for view in [item for item in registry.views if item.book == "oneoff"]:
+            blocks = [
+                {
+                    **block,
+                    "filter": {
+                        "any": [
+                            {"all": [*group["all"], {"field": "department", "op": "in", "value": [str(yuo.id)]}]}
+                            for group in block["filter"]["any"]
+                        ]
+                    },
+                }
+                for block in view.blocks
+            ]
+            setup.upsert_view(session, workspace, {"blocks": blocks}, view.id)
+        registry = service.Registry(session, workspace)
+        assert views.book_departments(registry.views) == {"oneoff": str(yuo.id)}
+        keys = [view.key for view in registry.views if view.book == "oneoff"]
+
+        # Сводка: Акжол заплатил 174 000 из 348 000, Альфа - 50 000 из 150 000.
+        index = summary.build_index(
+            [
+                HEADER,
+                _row("ТОО Акжол", "№ОКР/59", "174000", own="BBCL"),
+                _row("ТОО Альфа", "№ЮО/1", "50000", own="BBCL"),
+            ],
+            title="Сводка", worksheet="Сводка все ЮР лица",
+        )
+        summary._slots[workspace.id] = summary._Slot(source=("x", "y"), index=index, at=time.monotonic())
+        try:
+            listed = {item["values"]["number"]: item for item in service.list_all(session, workspace, FULL)["contracts"]}
+            data = export_module.build(session, workspace, FULL, OWNER, keys)
+        finally:
+            summary.forget(workspace.id)
+
+    # В ответе реестра - доля ЮО, и только её; договор одного отдела и отделы без долей - без неё.
+    assert listed["№ОКР/59"]["department_share"] == {yuo_id: {"amount": "104400.00", "percent": "30"}}
+    assert "department_share" not in listed["№ЮО/1"] and "department_share" not in listed["№ЮО/2"]
+
+    book = load_workbook(io.BytesIO(data))
+    rows = [[cell.value for cell in row] for row in book["Остатки"].iter_rows()]
+    # Итог части - по долям: 52 200 у ОКР/59 (30% от 174 000) и 100 000 у Альфы.
+    assert rows[0][1] == "Работа идёт - есть остаток · договоров: 2 · остаток: 152 200 ₸"
+    head = rows[1]
+    number, amount, paid, rest = (head.index(label) for label in ("№ договора", "Сумма договора", "Оплачено", "Остаток"))
+    values = {row[number]: (row[amount], row[paid], row[rest]) for row in rows[2:] if row and row[number]}
+    assert values["№ОКР/59"] == (104400, 52200, 52200)
+    assert values["№ЮО/1"] == (150000, 50000, 100000)
+    # Во всём списке «Разовых»: отделов два, доли ЮО нет - договор целиком.
+    main = [[cell.value for cell in row] for row in book["Разовые"].iter_rows()]
+    column = main[0].index("Сумма договора")
+    assert {row[main[0].index("№ договора")]: row[column] for row in main[1:]}["№ЮО/2"] == 90000
+
+
 def test_vygruzka_bez_vybora_tolko_reestr(space):
     with finance_session() as session:
         workspace = _ws(session, space)

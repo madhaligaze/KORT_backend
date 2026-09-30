@@ -246,7 +246,57 @@ def fields_used(rule: dict[str, Any] | None) -> set[str]:
     }
 
 
+def book_department(views: Iterable[Any], book: str) -> str | None:
+    """Отдел, которым отобраны все листы книги, - его id.
+
+    «Разовые» с условием «отдел - ЮО» в каждой группе каждого блока - это
+    «Разовые ЮО», и сумма договора в них - доля ЮО (30.09.2026). Хоть один
+    блок без такого условия или отделы разные - `None`: книга не про один
+    отдел. То же правило у клиента (`bookDepartment` в `schema.ts`).
+    """
+    if not book:
+        return None
+    found: str | None = None
+    seen = False
+    for view in views:
+        if (getattr(view, "book", "") or "") != book:
+            continue
+        seen = True
+        for block in view.blocks or []:
+            groups = ((block or {}).get("filter") or {}).get("any") or []
+            if not groups:
+                return None
+            for group in groups:
+                hit = next(
+                    (
+                        condition
+                        for condition in group.get("all", [])
+                        if condition.get("field") == "department"
+                        and condition.get("op") == "in"
+                        and isinstance(condition.get("value"), list)
+                        and len(condition["value"]) == 1
+                    ),
+                    None,
+                )
+                department = str(hit["value"][0]) if hit else None
+                if department is None or (found is not None and found != department):
+                    return None
+                found = department
+    return found if seen else None
+
+
+def book_departments(views: Iterable[Any]) -> dict[str, str]:
+    """Книга → её отдел, у книг, отобранных одним отделом (`book_department`)."""
+    listed = list(views)
+    out: dict[str, str] = {}
+    for book in {(getattr(view, "book", "") or "") for view in listed} - {""}:
+        department = book_department(listed, book)
+        if department is not None:
+            out[book] = department
+    return out
+
+
 __all__ = [
-    "FilterError", "NUMBER_OPS", "OPS", "TONES", "VIRTUAL_FIELDS", "fields_used", "is_empty", "matches", "membership",
-    "place", "tone_of", "validate", "validate_paint",
+    "FilterError", "NUMBER_OPS", "OPS", "TONES", "VIRTUAL_FIELDS", "book_department", "book_departments", "fields_used",
+    "is_empty", "matches", "membership", "place", "tone_of", "validate", "validate_paint",
 ]
