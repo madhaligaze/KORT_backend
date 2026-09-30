@@ -616,6 +616,19 @@ def test_blokirovka_zakryvaet_vhod_v_etu_kompaniyu(app: FastAPI) -> None:
     assert again.status_code == 200
 
 
+def test_priroda_stati_kapital_sohranyaetsya(app: FastAPI) -> None:
+    """01.10.2026: «капитал: погашение, дивиденды» из «Справочников» отвечал
+    422 по-английски - маршрут держал свой список природ, без `capital`."""
+    owner = register(app)
+    categories = owner.get(f"{BASE}/dictionaries").json()["categories"]
+    rent = next(item for item in categories if item["side"] == "expense")
+    done = owner.patch(f"{BASE}/dictionaries/categories/{rent['id']}/nature", json={"nature": "capital"})
+    assert done.status_code == 200, done.text
+    assert done.json()["nature"] == "capital"
+    wrong = owner.patch(f"{BASE}/dictionaries/categories/{rent['id']}/nature", json={"nature": "bogus"})
+    assert wrong.status_code == 422 and wrong.json()["detail"] == "Такой природы статьи нет"
+
+
 def test_zavershit_odin_seans_sotrudnika_ostalnye_zhivut(app: FastAPI) -> None:
     """01.10.2026: «Завершить» в строке сеанса сотрудника закрывало все его
     сеансы - сеанс на потерянном телефоне закрывали, а человека выбрасывало и

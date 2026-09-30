@@ -1104,7 +1104,7 @@ def archive_entry(kind: str, item_id: UUID, member: Member = Depends(require_acc
 
 
 class NatureIn(BaseModel):
-    nature: str = Field(pattern="^(revenue|cogs|operating|financial|depreciation|tax|other)$")
+    nature: str
 
 
 @router.patch("/dictionaries/categories/{item_id}/nature")
@@ -1115,8 +1115,16 @@ def set_category_nature(
 
     От неё зависят показатели: без неё «Закуп товара» и «Аренда» - просто два
     расхода, и валовую прибыль с EBITDA посчитать нечем.
+
+    Список - тот же, что у базы (`CATEGORY_NATURES`). До 01.10.2026 здесь стоял
+    свой, без `capital`: «капитал: кредит, погашение, дивиденды» из
+    «Справочников» отвечал 422 по-английски, хотя засев и отчёты его знают.
     """
     _guard()
+    from app.finance.models import CATEGORY_NATURES
+
+    if body.nature not in CATEGORY_NATURES:
+        raise HTTPException(status_code=422, detail="Такой природы статьи нет")
     with finance_session() as session:
         workspace = _workspace(session, member)
         category = session.get(Category, item_id)
