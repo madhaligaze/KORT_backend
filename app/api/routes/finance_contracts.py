@@ -920,7 +920,7 @@ class SharesIn(BaseModel):
 
 @router.get("/{contract_id}/shares")
 def contract_shares(contract_id: UUID, member: Member = Depends(contract_member)):
-    """Доли исполнителей и отделов - только то, что открыто этому человеку."""
+    """Доли сотрудников и отделов - только то, что открыто этому человеку."""
     access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)

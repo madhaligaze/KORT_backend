@@ -1,4 +1,4 @@
-"""Доли исполнителей и отделов, изменения листа и возврат «как было» (29.09.2026).
+"""Доли сотрудников и отделов, изменения листа и возврат «как было» (29.09.2026).
 
 Набор держит то, что было обещано владельцу:
 
@@ -217,8 +217,10 @@ def test_sovmestnyy_dogovor_bez_summ_v_otbore_s_dolyami(app: FastAPI) -> None:
 
 
 def test_doli_v_vygruzke_excel_po_pravam(app: FastAPI) -> None:
-    """30.09: в скачанном .xlsx колонки «Доли исполнителей» не было вовсе.
-    Теперь - последней, как в листе, и видно в ней то же, что на экране."""
+    """30.09: в скачанном .xlsx колонки долей людей не было вовсе. Теперь -
+    последней, как в листе, и видно в ней то же, что на экране. Называется
+    «Доли сотрудников», как блок в карточке (до вечера 30.09 - «Доли
+    исполнителей»)."""
     import io
 
     from openpyxl import load_workbook
@@ -235,7 +237,7 @@ def test_doli_v_vygruzke_excel_po_pravam(app: FastAPI) -> None:
         sheet = load_workbook(io.BytesIO(response.content)).worksheets[0]
         rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
         head = rows[0]
-        assert head[-1] == "Доли исполнителей"
+        assert head[-1] == "Доли сотрудников"
         number = head.index("№ Договора")
         return {str(row[number]): row[-1] for row in rows[1:]}
 

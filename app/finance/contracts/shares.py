@@ -1,4 +1,7 @@
-"""Доли исполнителей и отделов в договоре.
+"""Доли сотрудников и отделов в договоре.
+
+На экране и в выгрузке с 30.09.2026 - «Сотрудники» и «Доли сотрудников»
+(было «Исполнители»); в коде люди договора по-прежнему `people`.
 
 Откуда
 ──────
@@ -566,7 +569,7 @@ def set_people(
     """Доли ответственных - все разом: названные получают значение, не названные - пусто."""
     registry, contract, people, co = _load(session, workspace, access, contract_id, for_update=True)
     if people_scope(access, contract, registry, people, co) != "all":
-        raise PermissionError("Доли исполнителей распределяет начальник отдела или администратор")
+        raise PermissionError("Доли сотрудников распределяет начальник отдела или администратор")
     _check_write(contract, registry, access, people)
     unit = _unit(unit_raw)
     employees = registry.employees_for(people)
@@ -584,7 +587,7 @@ def set_people(
         name = employees[employee_id].full_name if employee_id in employees else "Доля"
         wanted[employee_id] = _read(item.get("value"), unit, name)
     values = [amount if unit == "amount" else percent for amount, percent in wanted.values()]
-    _check_sum(contract.amount, unit, [value for value in values if value is not None], "Доли исполнителей")
+    _check_sum(contract.amount, unit, [value for value in values if value is not None], "Доли сотрудников")
     before = {
         str(employee_id): _snapshot(contract.amount, row.share_amount, row.share_percent)
         for employee_id, row in rows.items()
@@ -607,7 +610,7 @@ def set_people(
             entity="contract",
             entity_id=contract.id,
             # Без сумм в заголовке: заголовок читают там, где суммы не открыты.
-            title=f"договор {contract.number or ''} · доли исполнителей: задано у {given} из {len(rows)}".replace("  ", " "),
+            title=f"договор {contract.number or ''} · доли сотрудников: задано у {given} из {len(rows)}".replace("  ", " "),
             before={"people_shares": before},
             after={"people_shares": after},
             actor=actor.email,
