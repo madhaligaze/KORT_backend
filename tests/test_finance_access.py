@@ -118,6 +118,8 @@ PUBLIC = {
     ("POST", "/auth/phone/login"),
     ("POST", "/auth/phone/set-password"),
     ("POST", "/auth/phone/forgot"),
+    # «Забыли?» у входа по почте (01.10.2026).
+    ("POST", "/auth/forgot"),
     ("POST", "/integrations/inbox"),
 }
 #: Своё: не требует права раздела. Список закрыт - новый маршрут «для себя»
@@ -272,8 +274,17 @@ def test_okno_isteklo_parol_ne_zadat(app: FastAPI) -> None:
         user = session.scalar(sa.select(FinanceUser).where(FinanceUser.phone == "+77014445566"))
         user.pending_until = datetime.now(timezone.utc) - timedelta(minutes=1)
     response = client(app).post(f"{BASE}/auth/phone/set-password", json={"phone": "+77014445566", "password": "secret-123"})
-    assert response.status_code == 400
+    # 410, а не 400 (01.10.2026): экран по нему предлагает «Попросить
+    # администратора», а первый шаг сразу говорит `expired`.
+    assert response.status_code == 410
     assert response.json()["detail"] == auth.WINDOW_EXPIRED
+    assert client(app).post(f"{BASE}/auth/phone/start", json={"phone": "+77014445566"}).json() == {"step": "expired"}
+    login = client(app).post(f"{BASE}/auth/phone/login", json={"phone": "+77014445566", "password": "secret-123"})
+    assert login.status_code == 410
+    # Просьба администратору - тем же «Забыли?» по номеру.
+    assert client(app).post(f"{BASE}/auth/phone/forgot", json={"phone": "+77014445566"}).status_code == 200
+    requests = owner.get(f"{BASE}/notifications").json()["items"]
+    assert any(item["kind"] == "password_reset_requested" and item["subject"]["phone"] == "+77014445566" for item in requests)
     listed = owner.get(f"{BASE}/people/employees").json()["items"]
     assert next(item for item in listed if item["phone"] == "+77014445566")["status"] == "pending_expired"
 
@@ -632,6 +643,45 @@ def test_blokirovka_zakryvaet_vhod_v_etu_kompaniyu(app: FastAPI) -> None:
     assert owner.post(f"{BASE}/people/employees/{card['id']}/unblock").status_code == 200
     again = client(app).post(f"{BASE}/auth/phone/login", json={"phone": "+77025550122", "password": "secret-123"})
     assert again.status_code == 200
+
+
+def test_zabyli_parol_po_pochte_i_vremennyy_parol(app: FastAPI) -> None:
+    """01.10.2026: учётка, входящая по почте, не могла попросить сброс
+    («Забыли?» только объяснял), а сброс отвечал «впишите телефон». Теперь
+    просьба уходит администраторам, а сброс выдаёт временный пароль, который
+    при входе меняют. Владельцу просьба не пишется - его сбрасывает только
+    сервер; ответ одинаковый для любой почты."""
+    owner = register(app)
+    invited = owner.post(
+        f"{BASE}/auth/members",
+        json={"email": "buh@bbc.kz", "password": "temp-pass-1", "role": "employee", "full_name": "Бухгалтер Б"},
+    )
+    assert invited.status_code == 201, invited.text
+    buh = client(app)
+    assert buh.post(f"{BASE}/auth/login", json={"email": "buh@bbc.kz", "password": "temp-pass-1"}).status_code == 200
+    assert buh.post(f"{BASE}/auth/password", json={"old_password": "temp-pass-1", "new_password": "own-pass-1"}).status_code == 200
+
+    stranger = client(app, "10.0.0.33")
+    for email in ("buh@bbc.kz", "nobody@bbc.kz", "owner@bbc.kz"):
+        answer = stranger.post(f"{BASE}/auth/forgot", json={"email": email})
+        assert answer.status_code == 200 and answer.json() == {"ok": True}
+    assert stranger.post(f"{BASE}/auth/forgot", json={"email": "не почта"}).status_code == 400
+    requests = [item for item in owner.get(f"{BASE}/notifications").json()["items"] if item["kind"] == "password_reset_requested"]
+    assert [item["subject"]["name"] for item in requests] == ["Бухгалтер Б"], requests
+
+    card = next(item for item in owner.get(f"{BASE}/people").json()["employees"] if item["full_name"] == "Бухгалтер Б")
+    reset = owner.post(f"{BASE}/people/employees/{card['id']}/reset")
+    assert reset.status_code == 200, reset.text
+    temporary = reset.json()["temporary_password"]
+    assert len(temporary) >= 8
+    # Прежний пароль и открытые сеансы больше не действуют.
+    assert buh.get(f"{BASE}/auth/me").json() == {"authenticated": False}
+    assert client(app).post(f"{BASE}/auth/login", json={"email": "buh@bbc.kz", "password": "own-pass-1"}).status_code == 401
+    again = client(app)
+    me = again.post(f"{BASE}/auth/login", json={"email": "buh@bbc.kz", "password": temporary}).json()
+    assert me["user"]["must_change_password"] is True
+    assert again.post(f"{BASE}/auth/password", json={"old_password": temporary, "new_password": "fresh-pass-2"}).status_code == 200
+    assert not [item for item in owner.get(f"{BASE}/notifications").json()["items"] if item["kind"] == "password_reset_requested"]
 
 
 def test_priroda_stati_kapital_sohranyaetsya(app: FastAPI) -> None:

@@ -835,8 +835,19 @@ def _account_of(session: Session, workspace_id: uuid.UUID, employee: Employee) -
     return user, membership
 
 
-def reset_password(session: Session, workspace: Workspace, member: auth.Member, employee_id: uuid.UUID) -> Employee:
-    """Сброс: старый пароль не действует, сеансы закрыты, учётка снова ждёт пароль."""
+def reset_password(
+    session: Session, workspace: Workspace, member: auth.Member, employee_id: uuid.UUID
+) -> str | None:
+    """Сброс: старый пароль не действует, сеансы закрыты.
+
+    Учётка с телефоном снова ждёт пароль 72 часа - человек задаёт его сам по
+    номеру. Учётка без телефона входит по почте (администратор, сотрудник по
+    приглашению на почту): ей выдаётся временный пароль, его администратор
+    передаёт лично, а при входе человек задаёт свой (`must_change_password`).
+    До 01.10.2026 такой сброс отвечал «сначала впишите телефон», и учётке по
+    почте, забывшей пароль, помочь было нечем. Возвращает временный пароль -
+    один раз, в ответе; у учётки с телефоном - `None`.
+    """
     employee = get_employee(session, workspace.id, employee_id)
     user, target = _account_of(session, workspace.id, employee)
     if target.role == "owner":
@@ -847,24 +858,37 @@ def reset_password(session: Session, workspace: Workspace, member: auth.Member, 
     _check_reach(member, employee)
     if _other_companies(session, user.id, workspace.id):
         raise Forbidden("Учётка состоит и в другой компании - сбросить её пароль отсюда нельзя")
-    if not user.phone:
-        raise PeopleError("Новый пароль задаётся по номеру - сначала впишите сотруднику телефон")
-    user.password_hash = None
-    user.status = "pending"
-    user.pending_until = _now() + auth.PENDING_WINDOW
-    user.must_change_password = False
+    temporary: str | None = None
+    if user.phone:
+        user.password_hash = None
+        user.status = "pending"
+        user.pending_until = _now() + auth.PENDING_WINDOW
+        user.must_change_password = False
+    elif user.email_normalized:
+        temporary = auth.temporary_password()
+        user.password_hash = auth.hash_password(temporary)
+        user.status = "active"
+        user.pending_until = None
+        user.must_change_password = True
+    else:
+        raise PeopleError("Войти этой учётке нечем - ни телефона, ни почты: впишите сотруднику телефон")
     closed = auth.end_sessions(session, user.id)
     resolved = notifications.resolve_about(session, workspace.id, user.id, by=member.user_id)
-    auth._forget_failures(f"phone:{user.phone}")
+    if user.phone:
+        auth._forget_failures(f"phone:{user.phone}")
+    if user.email_normalized:
+        auth._forget_failures(user.email_normalized)
     session.flush()
-    until = _aware(user.pending_until)
-    _event(
-        session, workspace, "people.reset",
-        f"сброс пароля: {short_name(employee.full_name)} · ждёт новый до {until.astimezone(_COMPANY_TZ):%d.%m, %H:%M}",
-        employee=employee, after={"sessions_closed": closed, "requests_resolved": resolved,
-                                  "pending_until": _iso(user.pending_until)},
-    )
-    return employee
+    if temporary is None:
+        until = _aware(user.pending_until)
+        title = f"сброс пароля: {short_name(employee.full_name)} · ждёт новый до {until.astimezone(_COMPANY_TZ):%d.%m, %H:%M}"
+        after = {"sessions_closed": closed, "requests_resolved": resolved, "pending_until": _iso(user.pending_until)}
+    else:
+        # Сам временный пароль в журнал не пишется: его видит только тот, кто сбросил.
+        title = f"сброс пароля: {short_name(employee.full_name)} · выдан временный пароль для входа по почте"
+        after = {"sessions_closed": closed, "requests_resolved": resolved, "temporary": True}
+    _event(session, workspace, "people.reset", title, employee=employee, after=after)
+    return temporary
 
 
 def set_blocked(

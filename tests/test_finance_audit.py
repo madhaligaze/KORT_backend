@@ -272,6 +272,8 @@ def test_kazhdyy_izmenyayushchiy_marshrut_pishet_sobytie(app: FastAPI, monkeypat
         owner, "POST", "/auth/members",
         json={"email": "buh@bbc.kz", "password": "temp-pass-1", "role": "accountant", "full_name": "Бухгалтер Б"},
     ).json()["id"]
+    # «Забыли?» у входа по почте - просьба администраторам, автор неизвестен.
+    walk.call(client(app), "POST", "/auth/forgot", user=None, session=False, json={"email": "buh@bbc.kz"})
     walk.call(owner, "PATCH", "/auth/members/{user_id}", user_id=invited, json={"role": "viewer"})
     walk.call(owner, "DELETE", "/auth/members/{user_id}", user_id=invited)
 

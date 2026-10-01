@@ -233,12 +233,17 @@ def _employee_action(member: Member, employee_id: UUID, action) -> dict[str, Any
         payload = people.employee_payload(session, workspace.id, employee)
         if isinstance(result, int):
             payload["sessions_closed"] = result
+        if isinstance(result, str):
+            # Временный пароль учётки по почте - один раз, тому, кто сбросил.
+            payload["temporary_password"] = result
         return payload
 
 
 @router.post("/people/employees/{employee_id}/reset")
 def reset_password(employee_id: UUID, member: Member = Depends(require_access("people", "edit"))) -> dict[str, Any]:
-    """Сброс: старый пароль не действует, сеансы закрыты, снова ждёт пароль 72 часа.
+    """Сброс: старый пароль не действует, сеансы закрыты. С телефоном - снова
+    ждёт пароль 72 часа; без телефона (вход по почте) - в ответе
+    `temporary_password`, его меняют при входе.
 
     Сотрудников сбрасывает администратор, администраторов - владелец, владельца -
     только команда на сервере.

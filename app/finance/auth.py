@@ -115,6 +115,21 @@ class NeedsPassword(AuthError):
     """
 
 
+class WindowExpired(AuthError):
+    """Окно «задать пароль» прошло: отвечаем 410, а не 400 - экран по нему
+    предлагает «Попросить администратора» (01.10.2026: раньше был только текст
+    «попросите администратора», а просить было нечем)."""
+
+
+#: Временный пароль - его диктуют или пересылают: без похожих знаков (0/о, 1/l).
+_TEMPORARY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def temporary_password(length: int = 10) -> str:
+    """Временный пароль для учётки, входящей по почте: при входе его сменят."""
+    return "".join(secrets.choice(_TEMPORARY_ALPHABET) for _ in range(length))
+
+
 @dataclass(frozen=True)
 class Member:
     """Снимок вошедшего: кто, в какой компании и что ему можно.
@@ -353,7 +368,9 @@ def register(
         sa.select(FinanceUser).where(FinanceUser.email_normalized == clean_email)
     )
     if exists is not None:
-        raise AuthError("Такая почта уже зарегистрирована - войдите или смените пароль")
+        # Не «смените пароль»: своей смены пароля до входа нет, а «Забыли?»
+        # у входа отправляет просьбу администраторам (01.10.2026).
+        raise AuthError("Такая почта уже зарегистрирована - войдите с ней; пароль забыт - «Забыли?» у входа")
 
     user = FinanceUser(
         email=(email or "").strip(),
@@ -486,11 +503,14 @@ def login(
 
 
 def phone_start(session: Session, *, phone: str, ip: str = "") -> str:
-    """Первый шаг входа по номеру: `password` или `set_password`.
+    """Первый шаг входа по номеру: `password`, `set_password` или `expired`.
 
     Незнакомый номер - `password`, как и знакомый: иначе по ответу перебором
     собирался бы список сотрудников. `set_password` видит только учётка,
-    ждущая пароль, - ей этот шаг и нужен.
+    ждущая пароль, - ей этот шаг и нужен. `expired` - она же, но окно ожидания
+    прошло (01.10.2026): раньше человек набирал новый пароль дважды и только
+    потом узнавал, что задать его нельзя. Тайны в этом не больше, чем в
+    `set_password`.
     """
     clean = normalize_phone(phone)
     if ip and (_too_many_attempts(f"ip:{ip}", IP_LIMIT) or _too_many_attempts(f"start:{ip}", START_LIMIT)):
@@ -501,7 +521,8 @@ def phone_start(session: Session, *, phone: str, ip: str = "") -> str:
         _note_failure(f"start:{ip}")
     user = session.scalar(sa.select(FinanceUser).where(FinanceUser.phone == clean))
     if user is not None and user.status == "pending":
-        return "set_password"
+        until = _aware(user.pending_until)
+        return "set_password" if until is not None and until > _now() else "expired"
     return "password"
 
 
@@ -523,7 +544,7 @@ def phone_login(
             _note_failure(f"start:{ip}")
         until = _aware(user.pending_until)
         if until is None or until <= _now():
-            raise AuthError(WINDOW_EXPIRED)
+            raise WindowExpired(WINDOW_EXPIRED)
         raise NeedsPassword(NEEDS_PASSWORD)
     if user is None or not verify_password(user.password_hash, password or ""):
         _failure(session, user, key=key, ip=ip, user_agent=user_agent, login_text=clean)
@@ -557,7 +578,7 @@ def phone_set_password(
         raise AuthError(NO_PENDING)
     until = _aware(user.pending_until)
     if until is None or until <= _now():
-        raise AuthError(WINDOW_EXPIRED)
+        raise WindowExpired(WINDOW_EXPIRED)
     user.password_hash = hash_password(password)
     user.status = "active"
     user.pending_until = None
@@ -597,6 +618,42 @@ def phone_forgot(session: Session, *, phone: str, user_agent: str = "", ip: str 
         return
     for membership in _memberships(session, user.id):
         if membership.blocked_at is not None:
+            continue
+        _event(
+            session, membership.workspace_id, "auth.reset_requested", title="запрос сброса пароля",
+            user_id=None, ip=ip, user_agent=user_agent, actor="", entity_id=user.id,
+        )
+        notifications.notify(
+            session, membership.workspace_id, "password_reset_requested",
+            subject_user_id=user.id,
+            payload={"ip": ip, "user_agent": user_agent[:400]},
+        )
+
+
+def email_forgot(session: Session, *, email: str, user_agent: str = "", ip: str = "") -> None:
+    """«Забыли?» у входа по почте - просьба администраторам (01.10.2026).
+
+    До этого просьба уходила только по номеру, а учётка, входящая по почте
+    (администратор, сотрудник по приглашению на почту), могла только прочитать
+    «пароль сбрасывает владелец». Ответ маршрута одинаковый, есть почта или нет.
+
+    Владельцу просьба не пишется: его пароль сбрасывается только командой на
+    сервере, и «владелец просит сбросить пароль» у администраторов было бы
+    просьбой, которую им нечем выполнить.
+    """
+    from app.finance import notifications
+
+    clean = normalize_email(email)
+    if not _EMAIL.match(clean):
+        raise AuthError("Это не похоже на адрес почты")
+    user = session.scalar(sa.select(FinanceUser).where(FinanceUser.email_normalized == clean))
+    if user is None or user.status == "blocked":
+        return
+    last = notifications.last_request_at(session, "password_reset_requested", user.id)
+    if last is not None and _now() - last < FORGOT_EVERY:
+        return
+    for membership in _memberships(session, user.id):
+        if membership.blocked_at is not None or membership.role == "owner":
             continue
         _event(
             session, membership.workspace_id, "auth.reset_requested", title="запрос сброса пароля",
@@ -1229,9 +1286,11 @@ __all__ = [
     "AuthError",
     "Member",
     "TooManyAttempts",
+    "WindowExpired",
     "add_company",
     "change_role",
     "companies_of",
+    "email_forgot",
     "end_sessions",
     "hash_password",
     "invite",
@@ -1254,5 +1313,6 @@ __all__ = [
     "transfer_ownership",
     "set_profile",
     "switch_company",
+    "temporary_password",
     "verify_password",
 ]

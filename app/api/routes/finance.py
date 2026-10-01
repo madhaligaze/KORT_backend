@@ -407,6 +407,9 @@ def _auth_fail(exc: AuthError, status: int) -> HTTPException:
     if isinstance(exc, auth.NeedsPassword):
         # 409, а не 401: экран по нему переходит к «Придумайте пароль».
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, auth.WindowExpired):
+        # 410: окно задать пароль прошло - экран предлагает «Попросить администратора».
+        return HTTPException(status_code=410, detail=str(exc))
     return HTTPException(status_code=status, detail=str(exc))
 
 
@@ -540,6 +543,23 @@ def auth_phone_forgot(body: PhoneIn, request: Request) -> dict[str, bool]:
             auth.phone_forgot(session, phone=body.phone, user_agent=_agent(request), ip=client_ip(request))
         except AuthError as exc:
             # Неверный формат номера - не тайна: его видит и сама форма.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+class ForgotIn(BaseModel):
+    email: str
+
+
+@router.post("/auth/forgot")
+def auth_email_forgot(body: ForgotIn, request: Request) -> dict[str, bool]:
+    """«Забыли?» у входа по почте: просьба администраторам. Ответ одинаковый, есть почта или нет."""
+    _guard()
+    with finance_session() as session:
+        try:
+            auth.email_forgot(session, email=body.email, user_agent=_agent(request), ip=client_ip(request))
+        except AuthError as exc:
+            # Не похоже на почту - не тайна: это видно и по самому полю.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
 
