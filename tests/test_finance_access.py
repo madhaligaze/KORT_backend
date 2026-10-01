@@ -684,6 +684,28 @@ def test_zabyli_parol_po_pochte_i_vremennyy_parol(app: FastAPI) -> None:
     assert not [item for item in owner.get(f"{BASE}/notifications").json()["items"] if item["kind"] == "password_reset_requested"]
 
 
+def test_udalennaya_operatsiya_vozvrashchaetsya_iz_zhurnala(app: FastAPI) -> None:
+    """01.10.2026: «Удалить» в журнале отвечает записью истории, и «Вернуть»
+    возвращает операцию тому, у кого правка журнала, - без корзины кабинета."""
+    owner = register(app)
+    cash = next(item for item in owner.get(f"{BASE}/dictionaries").json()["accounts"] if item["name"] == "Касса")
+    card = employee(owner, "Кассир Касымова", "+77025550133")
+    grant(owner, "employee", card["id"], {"journal": "edit"})
+    cashier = activate(app, "+77025550133")
+    made = cashier.post(
+        f"{BASE}/operations",
+        json={"kind": "income", "paid_at": "2026-09-01", "amount": "1000", "account_to_id": cash["id"], "comment": "выручка"},
+    )
+    assert made.status_code == 200, made.text
+    operation = made.json()["id"]
+    removed = cashier.delete(f"{BASE}/operations/{operation}")
+    assert removed.status_code == 200, removed.text
+    assert not cashier.get(f"{BASE}/operations").json()["items"]
+    back = cashier.post(f"{BASE}/history/{removed.json()['undo']}/undo")
+    assert back.status_code == 200, back.text
+    assert [item["id"] for item in cashier.get(f"{BASE}/operations").json()["items"]] == [operation]
+
+
 def test_priroda_stati_kapital_sohranyaetsya(app: FastAPI) -> None:
     """01.10.2026: «капитал: погашение, дивиденды» из «Справочников» отвечал
     422 по-английски - маршрут держал свой список природ, без `capital`."""

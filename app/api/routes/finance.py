@@ -1513,7 +1513,11 @@ def patch_operation(
 
 
 @router.delete("/operations/{operation_id}")
-def delete_operation(operation_id: UUID, member: Member = Depends(require_access(("journal", "calendar"), "edit"))) -> dict[str, bool]:
+def delete_operation(operation_id: UUID, member: Member = Depends(require_access(("journal", "calendar"), "edit"))) -> dict[str, Any]:
+    """Удалить операцию - в корзину. `undo` - запись истории: по ней журнал
+    сразу предлагает «Вернуть» (`POST /history/{undo}/undo`). До 01.10.2026
+    вернуть удалённое сотрудник мог только «Откатить» в кабинете - корзина
+    открыта лишь администратору."""
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
@@ -1523,7 +1527,7 @@ def delete_operation(operation_id: UUID, member: Member = Depends(require_access
             service.delete_operation(session, workspace, operation_id, actor=_actor(member))
         except FinanceError as exc:
             raise _fail(exc) from exc
-        history.write(
+        entry = history.write(
             session,
             workspace,
             kind="operation.delete",
@@ -1532,7 +1536,7 @@ def delete_operation(operation_id: UUID, member: Member = Depends(require_access
             before=before,
             actor=_actor(member),
         )
-        return {"ok": True}
+        return {"ok": True, "undo": str(entry.id)}
 
 
 # ── Табличный вид ────────────────────────────────────────────────────────────
