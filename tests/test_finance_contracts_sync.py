@@ -108,6 +108,34 @@ def test_odinakovye_nomera_bez_zakazchika_ne_ugadyvaem(owner: TestClient) -> Non
     assert report["rows"][0]["status"] == "matched"
 
 
+def test_sverka_vidit_tolko_otkrytye_dogovory(owner: TestClient) -> None:
+    """01.10.2026: пробный прогон отдавал в отчёте значения любого договора
+    компании по номеру - сотруднику с правкой только своих договоров тоже.
+    Теперь чужой договор не сопоставляется, не показывается и не заводится
+    второй раз; скрытое поле не читается."""
+    app = owner.app
+    # Без отдела - права как записаны лично (отдел был бы потолком).
+    card = owner.post(
+        f"{BASE}/people/employees",
+        json={"full_name": "Сейтова Айдана", "phone": "+77025550122", "access": True},
+    ).json()
+    grant = owner.put(
+        f"{BASE}/access/employee/{card['id']}",
+        json={"changes": {"contracts": {"level": "edit", "scope": {"rows": "own"}}, "contracts.field.note": "none"}},
+    )
+    assert grant.status_code == 200, grant.text
+    person = TestClient(app)
+    assert person.post(f"{BASE}/auth/phone/start", json={"phone": "+77025550122"}).json() == {"step": "set_password"}
+    assert person.post(f"{BASE}/auth/phone/set-password", json={"phone": "+77025550122", "password": "secret-123"}).status_code == 200
+    report = _sync(person, [{"number": "ЮО/1", "values": {"Примечания": "x", "Текущее состояние": "Исполнен"}}], apply=True)
+    line = report["rows"][0]
+    assert line["status"] == "closed" and "fields" not in line and "contract_id" not in line, line
+    assert report["summary"]["closed"] == 1 and report["summary"]["create"] == 0
+    numbers = [item["values"].get("number") for item in owner.get(f"{BASE}/contracts").json()["contracts"]]
+    assert numbers.count("ЮО/1") == 1
+    assert any("не открыто" in item for item in line.get("unknown", [])), line
+
+
 def test_novyy_dogovor_zavoditsya_a_neznakomaya_kolonka_nazyvaetsya(owner: TestClient) -> None:
     row = {
         "number": "№ЮО/143",

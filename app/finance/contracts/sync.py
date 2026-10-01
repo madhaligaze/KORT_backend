@@ -179,9 +179,18 @@ def run(
         raise PermissionError("Правка договоров вам не открыта")
     registry = service.Registry(session, workspace)
     keys = _field_keys(registry)
-    contracts = list(
+    everything = list(
         session.scalars(sa.select(Contract).where(Contract.workspace_id == workspace.id, Contract.deleted_at.is_(None)))
     )
+    # Только договоры, открытые этому человеку, - как в реестре. До 01.10.2026
+    # сверка брала все договоры компании и отдавала в отчёте их значения, в
+    # том числе скрытых от человека полей: пробный прогон с номером открывал
+    # договор другого отдела сотруднику с правом правки своего.
+    people_now = service.people_of(session, [item.id for item in everything])
+    contracts = [
+        item for item in everything if service.visible_to(item, registry, access, people_now.get(item.id, []))
+    ]
+    closed_numbers = {number_key(item.number) for item in everything} - {number_key(item.number) for item in contracts}
     by_number: dict[str, list[Contract]] = {}
     for contract in contracts:
         by_number.setdefault(number_key(contract.number), []).append(contract)
@@ -189,7 +198,7 @@ def run(
 
     report: list[dict[str, Any]] = []
     totals = {"rows": len(rows), "matched": 0, "create": 0, "ambiguous": 0, "errors": 0,
-              "same": 0, "fill": 0, "change": 0, "conflict": 0, "applied": 0}
+              "same": 0, "fill": 0, "change": 0, "conflict": 0, "applied": 0, "closed": 0}
     plans: list[tuple[int, Contract | None, dict[str, Any]]] = []
 
     for index, row in enumerate(rows):
@@ -210,6 +219,11 @@ def run(
             if key in _READ_ONLY:
                 unknown.append(f"{name} (считается само - только чтение)")
                 continue
+            if key in access.hidden:
+                # Скрытое поле не читается и не пишется - и не называется
+                # своим заголовком, как в реестре.
+                unknown.append(f"{name} (поле вам не открыто)")
+                continue
             values[key] = value
         if row.get("customer") and "customer" not in values:
             values["customer"] = row["customer"]
@@ -222,6 +236,13 @@ def run(
             line.update(status="ambiguous", error="Номер у нескольких договоров - укажите заказчика точнее",
                         candidates=[str(item.id) for item in found])
             totals["ambiguous"] += 1
+            continue
+        if not found and number_key(row["number"]) in closed_numbers:
+            # Договор с этим номером есть, но человеку не открыт: не заводить
+            # второй такой же и не показывать чужой. Что номер занят, реестр и
+            # так говорит замечанием «номер уже есть у … - договор вам не открыт».
+            line.update(status="closed", error="Договор с этим номером вам не открыт - строка не тронута")
+            totals["closed"] += 1
             continue
         if not found:
             if not create:

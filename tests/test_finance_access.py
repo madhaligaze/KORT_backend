@@ -466,6 +466,24 @@ def test_dogovory_chuzhogo_otdela_i_skrytoe_pole(app: FastAPI) -> None:
     assert scope["rows"] == "department" and scope["fields"] == {"amount": "none"}
     assert card["id"] == scope["employee_id"]
 
+    # 01.10.2026: «История», «Соглашения» и «Разобрать» чужого договора - тоже
+    # «не найден» (его id приходит в замечании «номер уже есть у …»).
+    for method, path in (
+        ("GET", f"/contracts/{foreign}/history"),
+        ("GET", f"/contracts/{foreign}/amendments"),
+        ("POST", f"/contracts/{foreign}/amendments/parse"),
+    ):
+        assert lawyer.request(method, f"{BASE}{path}").status_code == 404, path
+    # В истории своего договора нет записей о скрытом поле.
+    assert owner.patch(f"{BASE}/contracts/{mine}", json={
+        "values": {"amount": "600000"}, "mode": {"kind": "fix"},
+    }).status_code == 200
+    owner_titles = [item["title"] for item in owner.get(f"{BASE}/contracts/{mine}/history").json()["items"]]
+    assert any("600" in title for title in owner_titles), owner_titles
+    lawyer_items = lawyer.get(f"{BASE}/contracts/{mine}/history").json()["items"]
+    assert all("amount" not in (item["before"] or {}) and "amount" not in (item["after"] or {}) for item in lawyer_items)
+    assert not any("600" in item["title"] for item in lawyer_items), [item["title"] for item in lawyer_items]
+
 
 def test_drugie_otdely_tolko_prosmotr(app: FastAPI) -> None:
     """28.09.2026: администратор открывает юристу ЮО договоры НО - видеть, не править."""

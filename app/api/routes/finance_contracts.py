@@ -98,6 +98,22 @@ def _raise(exc: Exception, **context: Any):
     return outcome
 
 
+def _opened(session, workspace, access: service.Access, contract_id: UUID) -> service.Registry:
+    """Договор открыт этому человеку - иначе «не найден», как несуществующий.
+
+    До 01.10.2026 «История», «Соглашения» и «Разобрать» брали договор по id
+    без этой проверки. А id чужих договоров приходят на клиент в замечании
+    «номер уже есть у …» - и история договора другого отдела (суммы, стороны,
+    скрытые поля) читалась любым, кому открыт реестр.
+    """
+    contract = service.get_contract(session, workspace, contract_id)
+    registry = service.Registry(session, workspace)
+    people_now = service.people_of(session, [contract.id]).get(contract.id, [])
+    if not service.visible_to(contract, registry, access, people_now):
+        raise service.NotFound("Договор не найден")
+    return registry
+
+
 # ── Схема, список, изменения ─────────────────────────────────────────────────
 
 
@@ -903,11 +919,20 @@ def contract_history(contract_id: UUID, before: str | None = Query(None), member
         workspace = _workspace(session, member)
         try:
             cursor = datetime.fromisoformat(before) if before else None
+            registry = _opened(session, workspace, access, contract_id)
             contract = service.get_contract(session, workspace, contract_id)
-            registry = service.Registry(session, workspace)
             # Доли - не всем: чужие суммы не должны доезжать через «Историю».
             hidden = shares_module.hidden_history(session, registry, access, contract)
-            return {"items": service.history_of(session, workspace, contract_id, before=cursor, hide=hidden)}
+            items = service.history_of(session, workspace, contract_id, before=cursor, hide=hidden)
+            # Правка скрытого от человека поля несёт его значение и в
+            # «было/стало», и в заголовке («сумма: 1 000 → 2 000») - такой
+            # записи ему не показываем.
+            if access.hidden:
+                items = [
+                    item for item in items
+                    if not (set(item.get("before") or {}) | set(item.get("after") or {})) & access.hidden
+                ]
+            return {"items": items}
         except Exception as exc:  # noqa: BLE001
             return _raise(exc)
 
@@ -958,10 +983,11 @@ def put_department_shares(contract_id: UUID, body: SharesIn, member: Member = De
 
 @router.get("/{contract_id}/amendments")
 def list_amendments(contract_id: UUID, member: Member = Depends(contract_member)):
-    _access(member)
+    access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)
         try:
+            _opened(session, workspace, access, contract_id)
             return {"items": amendments_module.listing(session, workspace, contract_id)}
         except Exception as exc:  # noqa: BLE001
             return _raise(exc)
@@ -969,10 +995,13 @@ def list_amendments(contract_id: UUID, member: Member = Depends(contract_member)
 
 @router.post("/{contract_id}/amendments/parse")
 def parse_amendments(contract_id: UUID, member: Member = Depends(contract_member)):
-    _access(member)
+    access = _access(member)
     with finance_session() as session:
         workspace = _workspace(session, member)
         try:
+            _opened(session, workspace, access, contract_id)
+            if "amendments_text" in access.hidden:
+                raise PermissionError("Это поле вам не открыто")
             return {"pieces": amendments_module.parse(session, workspace, contract_id)}
         except Exception as exc:  # noqa: BLE001
             return _raise(exc)
