@@ -9,6 +9,10 @@
     FINANCE_SERVICE_ACCOUNT_JSON - креды Google для переноса книг в учёт: путь к
                                 JSON сервисного аккаунта или сам JSON. Пусто ⇒
                                 service-account.json в корне репозитория
+    FINANCE_SUPPORT_BOT_TOKEN - токен бота Telegram поддержки (@BotFather)
+    FINANCE_SUPPORT_CHAT_ID   - закрытый канал поддержки, куда бот кладёт
+                                обращения (`-100…`). Без обоих обращения
+                                копятся в базе и уйдут, когда бот появится
 
 Про валюту компании
 ───────────────────
@@ -50,6 +54,18 @@ class FinanceSettings(BaseSettings):
         default=_DEFAULT_CREDENTIALS_PATH,
         validation_alias=AliasChoices("FINANCE_SERVICE_ACCOUNT_JSON"),
     )
+    support_bot_token: str = Field(default="", validation_alias=AliasChoices("FINANCE_SUPPORT_BOT_TOKEN"))
+    support_chat_id: str = Field(default="", validation_alias=AliasChoices("FINANCE_SUPPORT_CHAT_ID"))
+
+    @property
+    def support_ready(self) -> bool:
+        """Бот поддержки настроен: обращения уходят в канал, ответы приходят обратно.
+
+        Токен бота - только у одного API. Второй процесс с тем же токеном
+        (локальный стенд) делил бы с продом события Telegram, и часть ответов
+        поддержки ушла бы в чужую базу.
+        """
+        return bool(self.support_bot_token.strip().strip('"') and self.support_chat_id.strip().strip('"'))
 
     @property
     def import_max_bytes(self) -> int:

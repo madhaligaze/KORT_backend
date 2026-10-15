@@ -24,6 +24,8 @@ ROUTES = BACKEND / "app" / "api" / "routes" / "finance.py"
 CONTRACT_ROUTES = BACKEND / "app" / "api" / "routes" / "finance_contracts.py"
 #: Люди, права, журнал действий, уведомления - тоже отдельным файлом.
 PEOPLE_ROUTES = BACKEND / "app" / "api" / "routes" / "finance_people.py"
+#: Переписка с поддержкой KORT.
+SUPPORT_ROUTES = BACKEND / "app" / "api" / "routes" / "finance_support.py"
 
 #: Пакеты, на которые модуль имеет право ссылаться.
 #:
@@ -75,7 +77,7 @@ def test_marshruty_ne_zavisyat_ot_uchetok_bbc() -> None:
     outside = _outside(_imports(ROUTES))
     assert not outside, f"маршруты «Финансов» импортируют чужое: {sorted(outside)}"
     # Маршруты договоров и доступа вправе брать вход и компанию у маршрутов раздела.
-    for path in (CONTRACT_ROUTES, PEOPLE_ROUTES):
+    for path in (CONTRACT_ROUTES, PEOPLE_ROUTES, SUPPORT_ROUTES):
         outside = _outside(_imports(path)) - {"app.api.routes.finance"}
         assert not outside, f"{path.name} импортирует чужое: {sorted(outside)}"
 

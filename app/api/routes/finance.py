@@ -375,6 +375,11 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
 
         stored = session.get(SheetLook, (member.user_id, member.workspace_id, habits.KEY))
         prefer = habits.prefer(stored.look) if stored is not None else {}
+    # Поддержка - вместе с «кто я»: ответ поддержки виден у значка в шапке с
+    # ближайшим опросом (раз в 20 с), без своего опроса у каждой вкладки.
+    from app.finance import support
+
+    support_state = support.state(session, member.user_id)
     return {
         "authenticated": True,
         "user": {
@@ -398,6 +403,7 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
         "pending_requests": pending,
         "employee": employee_out,
         "habits": prefer,
+        "support": support_state,
     }
 
 

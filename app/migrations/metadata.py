@@ -16,6 +16,7 @@ from app.finance.db import FinanceBase
 import app.finance.models  # noqa: F401 - учёт
 import app.finance.accounts_model  # noqa: F401 - учётки
 import app.finance.contracts.models  # noqa: F401 - реестр договоров
+import app.finance.support_model  # noqa: F401 - переписка с поддержкой
 
 target_metadata = [FinanceBase.metadata]
 

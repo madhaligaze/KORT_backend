@@ -124,22 +124,30 @@ async def lifespan(_: FastAPI):
     _run_migrations()
 
     contracts_task: asyncio.Task | None = None
+    support_task: asyncio.Task | None = None
     try:
         from app.finance.config import finance_settings
 
         if finance_settings.enabled:
             contracts_task = asyncio.create_task(_contract_amendments_loop())
+        # Бот поддержки: обращения - в канал Telegram, ответы - обратно.
+        # Без токена и канала обращения копятся в базе и уйдут, когда бот появится.
+        if finance_settings.enabled and finance_settings.support_ready:
+            from app.finance import support_bot
+
+            support_task = asyncio.create_task(support_bot.run_forever())
     except Exception as exc:  # noqa: BLE001
-        log.warning("finance: фоновая задача договоров не запустилась: %s", exc)
+        log.warning("finance: фоновая задача не запустилась: %s", exc)
 
     log.info("Application startup complete")
     try:
         yield
     finally:
-        if contracts_task is not None:
-            contracts_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await contracts_task
+        for task in (contracts_task, support_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
 
 app = FastAPI(

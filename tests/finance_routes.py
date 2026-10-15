@@ -26,9 +26,10 @@ def finance_routers() -> tuple[APIRouter, ...]:
     from app.api.routes.finance_contracts import router as contracts_router
     from app.api.routes.finance_looks import router as looks_router
     from app.api.routes.finance_people import router as people_router
+    from app.api.routes.finance_support import router as support_router
     from app.api.routes.finance_trash import router as trash_router
 
-    return (finance_router, contracts_router, people_router, trash_router, looks_router)
+    return (finance_router, contracts_router, people_router, trash_router, looks_router, support_router)
 
 
 def finance_app() -> FastAPI:

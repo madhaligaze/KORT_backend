@@ -137,6 +137,12 @@ SELF = {
     ("GET", "/audit"),
     # Сигнал «открыт раздел» проверяет право на сам раздел внутри.
     ("POST", "/audit/view"),
+    # Переписка с поддержкой KORT - своя у каждой учётки, пишет любой вошедший (16.10.2026).
+    ("GET", "/support"),
+    ("POST", "/support/messages"),
+    ("POST", "/support/read"),
+    ("POST", "/support/notice"),
+    ("GET", "/support/files/{file_id}"),
 }
 #: Изменяющий метод, который ничего не меняет, - ему хватает «видит».
 READONLY_POSTS = {
