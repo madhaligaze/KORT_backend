@@ -69,6 +69,8 @@ MEMBER_ROLES = ("owner", "admin", "employee")
 USER_STATUSES = ("active", "blocked", "pending")
 #: Кому уведомление: администраторам компании или одному человеку.
 NOTIFICATION_AUDIENCES = ("admins", "user")
+#: Устройство, с которого входят: ждёт подтверждения, доверенное, отклонённое.
+LOGIN_DEVICE_STATUSES = ("pending", "trusted", "denied")
 #: Чьи права: отдела или человека.
 GRANT_SUBJECTS = ("department", "employee")
 GRANT_LEVELS = ("none", "view", "edit")
@@ -184,6 +186,45 @@ class FinanceSession(FinanceBase):
     ip: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
 
 
+class LoginDevice(FinanceBase):
+    """Устройство, с которого входит человек. Нужно слабым, но уже заданным паролям.
+
+    Знание пароля перестаёт быть достаточным с незнакомого устройства: вход
+    слабым паролем с нового устройства не открывает сеанс, а ждёт
+    подтверждения с того, где человек уже вошёл (`auth.py`). Доверенное
+    устройство дальше входит прямо.
+
+    Опознаётся куки `fin_device` (случайная, как токен сеанса); в базе лежит её
+    SHA-256 - дамп базы не выдаёт доверенных устройств. Строки живут только у
+    учёток, входящих слабым паролем: сильному паролю устройство не нужно.
+    """
+
+    __tablename__ = "login_devices"
+    __table_args__ = (
+        sa.UniqueConstraint("user_id", "device_hash", name="uq_login_devices_user_device"),
+        sa.CheckConstraint(_in("status", LOGIN_DEVICE_STATUSES), name="login_device_status"),
+        sa.Index("ix_login_devices_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    #: SHA-256 куки `fin_device`.
+    device_hash: Mapped[str] = mapped_column(sa.Text)
+    status: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("'pending'"))
+    user_agent: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
+    ip: Mapped[str] = mapped_column(sa.Text, server_default=sa.text("''"))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    #: Когда подтвердили или отклонили. Пусто - ещё ждёт.
+    decided_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+
+
 class AccessGrant(FinanceBase):
     """Право отдела или человека на раздел.
 
@@ -268,9 +309,11 @@ __all__ = [
     "MEMBER_ROLES",
     "NOTIFICATION_AUDIENCES",
     "USER_STATUSES",
+    "LOGIN_DEVICE_STATUSES",
     "AccessGrant",
     "FinanceMembership",
     "FinanceSession",
     "FinanceUser",
+    "LoginDevice",
     "Notification",
 ]

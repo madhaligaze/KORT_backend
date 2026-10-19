@@ -21,6 +21,7 @@ openpyxl, разбор файла на двадцать тысяч строк с
 from __future__ import annotations
 
 import calendar as calendar_module
+import hmac
 import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -122,13 +123,46 @@ def _set_cookie(request: Request, response: Response, token: str) -> None:
     )
 
 
-def client_ip(request: Request) -> str:
-    """Адрес человека. Справочно: его ставит прокси Next заголовком `x-client-ip`.
+def _set_device_cookie(request: Request, response: Response, token: str) -> None:
+    """Метка устройства для подтверждения слабых паролей. Живёт долго, как сессия."""
+    response.set_cookie(
+        auth.DEVICE_COOKIE,
+        token,
+        max_age=int(auth.DEVICE_TTL.total_seconds()),
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(request),
+        path="/",
+    )
 
-    Прямой запрос к API может прислать любой заголовок, поэтому адрес - это
-    подпись в журнале и ключ ограничителя перебора, но не доказательство.
+
+def _from_proxy(request: Request) -> bool:
+    """Запрос пришёл через прокси Next: он один знает общий секрет.
+
+    Без секрета в настройках (локальный запуск, тесты) - как прежде, верим:
+    прямого доступа из интернета там нет.
     """
-    value = (request.headers.get("x-client-ip") or "").split(",")[0].strip()
+    from app.core.config import settings
+
+    secret = settings.proxy_shared_secret
+    if not secret:
+        return True
+    return hmac.compare_digest(request.headers.get("x-proxy-auth") or "", secret)
+
+
+def client_ip(request: Request) -> str:
+    """Адрес человека: его ставит прокси Next заголовком `x-client-ip`.
+
+    Заголовку верим, только если запрос принёс секрет прокси. До 19.10.2026
+    верили всегда, а API открыт и напрямую: прямой запрос с выдуманным
+    `x-client-ip` оседал этим адресом в «Сеансах» и журнале и обходил
+    ограничитель перебора по адресу - на каждую попытку новый адрес (аудит,
+    проверено на проде). Чужой заголовок теперь не значит ничего: адрес -
+    тот, с которого пришло соединение.
+    """
+    value = ""
+    if _from_proxy(request):
+        value = (request.headers.get("x-client-ip") or "").split(",")[0].strip()
     if not value and request.client is not None:
         value = request.client.host or ""
     return value[:64]
@@ -401,6 +435,9 @@ def _me_payload(session, member: Member) -> dict[str, Any]:
         "contracts_scope": rights.contracts_scope(),
         "people_scope": rights.people_scope(),
         "pending_requests": pending,
+        "pending_devices": (
+            auth.pending_devices(session, member.user_id) if finance_settings.device_approval else []
+        ),
         "employee": employee_out,
         "habits": prefer,
         "support": support_state,
@@ -447,12 +484,23 @@ def auth_register(body: RegisterIn, request: Request, response: Response) -> dic
     return payload
 
 
+def _device_response(approval: auth.NeedsDeviceApproval, request: Request, response: Response) -> dict[str, Any]:
+    """Пароль подошёл, но устройство новое: 202 и метка, по которой экран ждёт."""
+    if approval.set_token:
+        _set_device_cookie(request, response, approval.set_token)
+    response.status_code = 202
+    return {"step": "approve_device"}
+
+
 @router.post("/auth/login")
 def auth_login(body: LoginIn, request: Request, response: Response) -> dict[str, Any]:
     _guard()
     # Неудача пишет событие и счётчик - это должно сохраниться и при отказе,
-    # поэтому ошибка поднимается после выхода из транзакции.
+    # поэтому ошибка поднимается после выхода из транзакции. «Ждёт
+    # подтверждения устройства» тоже ловится внутри: его запись обязана дойти
+    # до коммита (finance_session откатывает транзакцию на исключении).
     failure: AuthError | None = None
+    approval: auth.NeedsDeviceApproval | None = None
     with finance_session() as session:
         try:
             member, token = auth.login(
@@ -461,10 +509,15 @@ def auth_login(body: LoginIn, request: Request, response: Response) -> dict[str,
                 password=body.password,
                 user_agent=_agent(request),
                 ip=client_ip(request),
+                device_token=request.cookies.get(auth.DEVICE_COOKIE),
             )
             payload = _me_payload(session, member)
+        except auth.NeedsDeviceApproval as exc:
+            approval = exc
         except AuthError as exc:
             failure = exc
+    if approval is not None:
+        return _device_response(approval, request, response)
     if failure is not None:
         # 401, а не 400: фронт по коду решает, показывать форму входа снова
         # или сообщение о недостатке прав.
@@ -505,15 +558,21 @@ def auth_phone_login(body: PhonePasswordIn, request: Request, response: Response
     """Номер и пароль → сеанс. Ответ - как у `me`."""
     _guard()
     failure: AuthError | None = None
+    approval: auth.NeedsDeviceApproval | None = None
     with finance_session() as session:
         try:
             member, token = auth.phone_login(
                 session, phone=body.phone, password=body.password,
                 user_agent=_agent(request), ip=client_ip(request),
+                device_token=request.cookies.get(auth.DEVICE_COOKIE),
             )
             payload = _me_payload(session, member)
+        except auth.NeedsDeviceApproval as exc:
+            approval = exc
         except AuthError as exc:
             failure = exc
+    if approval is not None:
+        return _device_response(approval, request, response)
     if failure is not None:
         raise _auth_fail(failure, 401) from failure
     _set_cookie(request, response, token)
@@ -549,6 +608,62 @@ def auth_phone_forgot(body: PhoneIn, request: Request) -> dict[str, bool]:
             auth.phone_forgot(session, phone=body.phone, user_agent=_agent(request), ip=client_ip(request))
         except AuthError as exc:
             # Неверный формат номера - не тайна: его видит и сама форма.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/auth/device/claim")
+def device_claim(request: Request, response: Response) -> dict[str, Any]:
+    """Ждущий экран нового устройства забирает сеанс, когда вход подтвердили.
+
+    Экран опрашивает этот маршрут, пока не придёт ответ: 200 с `me` - вход
+    подтвердили, 202 `pending` - ещё ждём, 403 - отклонили. Охраняется меткой
+    устройства в cookie: её держит только тот браузер, что начал вход.
+    """
+    _guard()
+    token = request.cookies.get(auth.DEVICE_COOKIE)
+    opened: tuple[str, dict[str, Any]] | None = None
+    state = "none"
+    with finance_session() as session:
+        result = auth.claim_device(
+            session, token, ip=client_ip(request), user_agent=_agent(request)
+        )
+        if isinstance(result, tuple):
+            member, session_token = result
+            opened = (session_token, _me_payload(session, member))
+        else:
+            state = result
+    if opened is not None:
+        _set_cookie(request, response, opened[0])
+        return opened[1]
+    if state == "denied":
+        raise HTTPException(status_code=403, detail="Вход с этого устройства отклонён")
+    if state == "pending":
+        response.status_code = 202
+        return {"step": "pending"}
+    raise HTTPException(status_code=404, detail="Запрос не найден или устарел")
+
+
+@router.post("/auth/device/{device_id}/approve")
+def device_approve(device_id: UUID, member: Member = Depends(current_member)) -> dict[str, bool]:
+    """Подтвердить вход с нового устройства - с того, где человек уже вошёл."""
+    _guard()
+    with finance_session() as session:
+        try:
+            auth.decide_device(session, member, device_id, trust=True)
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/auth/device/{device_id}/deny")
+def device_deny(device_id: UUID, member: Member = Depends(current_member)) -> dict[str, bool]:
+    """Отклонить вход с нового устройства."""
+    _guard()
+    with finance_session() as session:
+        try:
+            auth.decide_device(session, member, device_id, trust=False)
+        except AuthError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
 
@@ -2047,7 +2162,9 @@ def import_preview(
     строками и вернуться, не загружая файл заново.
     """
     _guard()
-    data = file.file.read()
+    # Не больше потолка и одного байта сверх: файл любой длины раньше
+    # дочитывался в память целиком и только потом отвергался.
+    data = file.file.read(finance_settings.import_max_bytes + 1)
     if len(data) > finance_settings.import_max_bytes:
         raise HTTPException(
             status_code=413,

@@ -39,6 +39,15 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
         validation_alias=AliasChoices("ALLOWED_ORIGINS"),
     )
+    # Общий секрет между прокси Next и этим API. Прокси ставит его заголовком
+    # `x-proxy-auth`, и только при совпадении API верит присланному адресу
+    # (`x-client-ip`). Пусто (локальный запуск, тесты) - адресу верим как
+    # прежде: прямого доступа из интернета там нет. На проде он обязателен -
+    # иначе любой прямой запрос к API подделывал бы адрес в журнале и обходил
+    # ограничитель перебора по адресу (см. client_ip в routes/finance.py).
+    proxy_shared_secret: str = Field(
+        default="", validation_alias=AliasChoices("PROXY_SHARED_SECRET")
+    )
     database_url: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/kort",
         validation_alias=AliasChoices("DATABASE_URL"),
@@ -55,6 +64,7 @@ class Settings(BaseSettings):
         "log_level",
         "app_host",
         "allowed_origins",
+        "proxy_shared_secret",
         "database_url",
         "azure_document_intelligence_endpoint",
         "azure_document_intelligence_key",

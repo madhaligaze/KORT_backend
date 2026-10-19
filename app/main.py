@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 import traceback
 from contextlib import asynccontextmanager
@@ -150,11 +151,119 @@ async def lifespan(_: FastAPI):
                     await task
 
 
+#: Описание API (`/docs`, `/redoc`, `/openapi.json`) - только вне прода. На
+#: проде оно отдавало без входа все 149 маршрутов с полями: готовая карта для
+#: того, кто ищет, куда ударить (аудит 19.10.2026). Фронту оно не нужно.
+_PUBLIC_DOCS = (settings.environment or "").strip().lower() not in {"production", "prod"}
+
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
     lifespan=lifespan,
+    docs_url="/docs" if _PUBLIC_DOCS else None,
+    redoc_url="/redoc" if _PUBLIC_DOCS else None,
+    openapi_url="/openapi.json" if _PUBLIC_DOCS else None,
 )
+
+#: Потолок тела запроса. Самое большое законное тело - обращение в поддержку
+#: (40 МБ файлов, `support.MAX_TOTAL_BYTES`) с обвязкой формы. Без потолка
+#: тело любой длины дочитывалось до конца, прежде чем маршрут его отвергал, -
+#: а регистрация открыта, и «вошедший» - это любой.
+MAX_BODY_BYTES = 48 * 1024 * 1024
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodyLimit:
+    """Отказ телу больше потолка - до того, как его прочтёт маршрут.
+
+    Чистый ASGI, а не `@app.middleware`: тот оборачивает ответ заново и
+    плохо уживается с фоновыми задачами (поддержка шлёт в Telegram после
+    ответа). Объявленная длина проверяется сразу; тело без длины (chunked)
+    считается по ходу чтения и обрывается на потолке.
+    """
+
+    def __init__(self, app, limit: int = MAX_BODY_BYTES) -> None:
+        self.app = app
+        self.limit = limit
+
+    async def _refuse(self, send, status: int, detail: str) -> None:
+        body = json.dumps({"detail": detail}, ensure_ascii=False).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        too_big = f"Запрос больше {self.limit // (1024 * 1024)} МБ"
+        declared = dict(scope.get("headers") or []).get(b"content-length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                return await self._refuse(send, 400, "Неверная длина запроса")
+            if length > self.limit:
+                return await self._refuse(send, 413, too_big)
+            return await self.app(scope, receive, send)
+
+        received = 0
+        started = False
+
+        async def counted():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.limit:
+                    raise _BodyTooLarge
+            return message
+
+        async def tracked(message):
+            nonlocal started
+            if message.get("type") == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted, tracked)
+        except _BodyTooLarge:
+            if started:
+                raise
+            await self._refuse(send, 413, too_big)
+
+
+class SecurityHeaders:
+    """API отдаёт JSON и файлы выгрузки: в рамку его не встраивают, тип не угадывают."""
+
+    HEADERS = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+    )
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def with_headers(message):
+            if message.get("type") == "http.response.start":
+                present = {name.lower() for name, _ in message.get("headers") or []}
+                message["headers"] = list(message.get("headers") or []) + [
+                    item for item in self.HEADERS if item[0] not in present
+                ]
+            await send(message)
+
+        await self.app(scope, receive, with_headers)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -163,14 +272,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Добавленный последним - снаружи: потолок тела отвечает раньше всех.
+app.add_middleware(SecurityHeaders)
+app.add_middleware(BodyLimit)
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {
-        "name": settings.app_name,
-        "docs": "/docs",
-        "health": f"{settings.api_v1_prefix}/health",
-    }
+    out = {"name": settings.app_name, "health": f"{settings.api_v1_prefix}/health"}
+    if _PUBLIC_DOCS:
+        out["docs"] = "/docs"
+    return out

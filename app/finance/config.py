@@ -2,6 +2,9 @@
 
 Переменные окружения (префикс FINANCE_):
     FINANCE_ENABLED           - "false" выключает раздел целиком (по умолчанию true)
+    FINANCE_DEVICE_APPROVAL   - "true" включает подтверждение входа с новых
+                                устройств для слабых паролей (по умолчанию
+                                false: в разработке барьер мешает)
     FINANCE_BASE_CURRENCY     - валюта компании, в которой сходятся отчёты (KZT)
     FINANCE_IMPORT_MAX_ROWS   - потолок строк в одном импорте (20000)
     FINANCE_IMPORT_MAX_MB     - потолок размера файла (15)
@@ -47,6 +50,13 @@ class FinanceSettings(BaseSettings):
 
     enabled: bool = True
     base_currency: str = "KZT"
+    #: Подтверждение входа с нового устройства для слабых, но уже заданных
+    #: паролей. Выключено: проект в разработке, входят с разных устройств, и
+    #: барьер подтверждения мешает. Включить к запуску - вход слабым паролем с
+    #: незнакомого устройства тогда ждёт «Разрешить» с того, где уже вошли
+    #: (`auth.py`, `login_devices`). Новых слабых паролей политика не пускает
+    #: независимо от этого флага.
+    device_approval: bool = False
     import_max_rows: int = Field(default=20_000, ge=1)
     import_max_mb: int = Field(default=15, ge=1)
     grid_max_rows: int = Field(default=10_000, ge=1)

@@ -62,9 +62,9 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from sqlalchemy.orm import Session
 
-from app.finance import access as access_module
+from app.finance import access as access_module, passwords
 from app.finance.access import Rights
-from app.finance.accounts_model import FinanceMembership, FinanceSession, FinanceUser
+from app.finance.accounts_model import FinanceMembership, FinanceSession, FinanceUser, LoginDevice
 from app.finance.models import Workspace
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,13 @@ _hasher = PasswordHasher()
 MIN_PASSWORD_LENGTH = 8
 SESSION_TTL = timedelta(days=30)
 COOKIE_NAME = "fin_session"
+#: Метка устройства для подтверждения слабых паролей. Живёт долго: устройство
+#: подтверждают один раз. В cookie - случайный токен, в базе его SHA-256.
+DEVICE_COOKIE = "fin_device"
+DEVICE_TTL = timedelta(days=400)
+#: Сколько «ждёт подтверждения» остаётся на виду и сколько после одобрения
+#: можно забрать сеанс на ждущем устройстве.
+APPROVAL_WINDOW = timedelta(minutes=30)
 #: Как часто обновлять «был в сети» у сессии.
 LAST_SEEN_STEP = timedelta(minutes=1)
 #: Сколько ждёт учётка, пока человек задаст пароль по номеру.
@@ -119,6 +126,21 @@ class WindowExpired(AuthError):
     """Окно «задать пароль» прошло: отвечаем 410, а не 400 - экран по нему
     предлагает «Попросить администратора» (01.10.2026: раньше был только текст
     «попросите администратора», а просить было нечем)."""
+
+
+class NeedsDeviceApproval(AuthError):
+    """Слабый пароль с незнакомого устройства: пароль верен, но сеанс не
+    открывается, пока вход не подтвердят с устройства, где человек уже вошёл.
+
+    Это не отказ: пароль подошёл. Поэтому маршрут отвечает не ошибкой, а 202
+    «ждём подтверждения» и ставит метку устройства, по которой ждущий экран
+    потом заберёт сеанс (`device_claim`). `set_token` - новая метка, если её
+    ещё не было; иначе `None` (cookie уже стоит).
+    """
+
+    def __init__(self, set_token: str | None = None) -> None:
+        super().__init__("Вход с нового устройства ждёт подтверждения")
+        self.set_token = set_token
 
 
 #: Временный пароль - его диктуют или пересылают: без похожих знаков (0/о, 1/l).
@@ -269,8 +291,15 @@ def normalize_phone(raw: str | None) -> str:
 
 
 def _check_password(password: str) -> None:
-    if len(password or "") < MIN_PASSWORD_LENGTH:
-        raise AuthError(f"Пароль короче {MIN_PASSWORD_LENGTH} символов")
+    """Стойкость нового пароля (`passwords.problem`). Только при задании нового.
+
+    Уже сохранённые пароли этой проверки не проходят и не обязаны: ломать вход
+    действующим учёткам ради политики нельзя. Слабый, но уже заданный пароль
+    прикрыт подтверждением устройства при входе, а не этой дверью.
+    """
+    trouble = passwords.problem(password or "")
+    if trouble is not None:
+        raise AuthError(trouble)
 
 
 def _now() -> datetime:
@@ -450,17 +479,11 @@ def _pick_membership(session: Session, user: FinanceUser) -> FinanceMembership |
     return open_[0] if open_ else None
 
 
-def _success(
-    session: Session,
-    user: FinanceUser,
-    *,
-    key: str,
-    ip: str,
-    user_agent: str,
-    title: str,
+def _begin(
+    session: Session, user: FinanceUser, *, ip: str, user_agent: str, title: str
 ) -> tuple[Member, str]:
+    """Открыть сеанс вошедшему: членство, запись «был в сети», событие входа."""
     membership = _pick_membership(session, user)
-    _forget_failures(key)
     user.last_login_at = _now()
     token, record = _open_session(
         session,
@@ -481,8 +504,171 @@ def _success(
     return member, token
 
 
+def _success(
+    session: Session,
+    user: FinanceUser,
+    *,
+    key: str,
+    ip: str,
+    user_agent: str,
+    title: str,
+) -> tuple[Member, str]:
+    _forget_failures(key)
+    return _begin(session, user, ip=ip, user_agent=user_agent, title=title)
+
+
+# ── Доверенные устройства (слабые пароли) ────────────────────────────────────
+
+
+def new_device_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _device_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _gate_device(
+    session: Session,
+    user: FinanceUser,
+    *,
+    password: str,
+    device_token: str | None,
+    ip: str,
+    user_agent: str,
+) -> None:
+    """Пустить ли сразу или ждать подтверждения устройства.
+
+    Сильный пароль - пускаем всегда: знание стойкого пароля достаточно.
+    Слабый, но уже заданный пароль (до политики, в том числе у владельца) -
+    только с доверенного устройства; с незнакомого заводим «ждёт
+    подтверждения» и поднимаем `NeedsDeviceApproval`. Запись должна пережить
+    коммит, поэтому маршрут ловит исключение внутри транзакции.
+
+    Выключено по умолчанию (`FINANCE_DEVICE_APPROVAL`): проект в разработке,
+    входят с разных устройств, и барьер подтверждения мешает. Тогда вход
+    открывается сразу, как при сильном пароле.
+    """
+    from app.finance.config import finance_settings
+
+    if not finance_settings.device_approval:
+        return
+    if not passwords.is_weak(password or ""):
+        return
+    token = device_token or ""
+    set_token: str | None = None
+    if not token:
+        token = new_device_token()
+        set_token = token
+    dhash = _device_hash(token)
+    now = _now()
+    row = session.scalar(
+        sa.select(LoginDevice).where(
+            LoginDevice.user_id == user.id, LoginDevice.device_hash == dhash
+        )
+    )
+    if row is not None and row.status == "trusted":
+        row.last_seen_at = now
+        session.flush()
+        return
+    if row is None:
+        row = LoginDevice(
+            user_id=user.id,
+            device_hash=dhash,
+            status="pending",
+            user_agent=(user_agent or "")[:400],
+            ip=(ip or "")[:64],
+        )
+        session.add(row)
+    else:
+        # Было отклонено или ещё ждёт - просим снова: отклонить по ошибке
+        # человек мог, и второй показ дешевле, чем тупик.
+        row.status = "pending"
+        row.decided_at = None
+        row.user_agent = (user_agent or "")[:400]
+        row.ip = (ip or "")[:64]
+        row.last_seen_at = now
+    session.flush()
+    raise NeedsDeviceApproval(set_token)
+
+
+def pending_devices(session: Session, user_id: uuid.UUID) -> list[dict[str, Any]]:
+    """Входы с новых устройств, ждущие решения, - для рамы того, кто уже вошёл."""
+    since = _now() - APPROVAL_WINDOW
+    rows = session.scalars(
+        sa.select(LoginDevice)
+        .where(
+            LoginDevice.user_id == user_id,
+            LoginDevice.status == "pending",
+            LoginDevice.created_at >= since,
+        )
+        .order_by(LoginDevice.created_at.desc())
+    )
+    return [
+        {
+            "id": str(row.id),
+            "user_agent": row.user_agent or "",
+            "ip": row.ip or "",
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+
+def decide_device(session: Session, member: Member, device_id: uuid.UUID, *, trust: bool) -> None:
+    """Подтвердить или отклонить вход с нового устройства. Только своё устройство."""
+    row = session.get(LoginDevice, device_id)
+    if row is None or row.user_id != member.user_id:
+        raise AuthError("Это устройство не ваше или запрос уже закрыт")
+    row.status = "trusted" if trust else "denied"
+    row.decided_at = _now()
+    session.flush()
+
+
+def claim_device(
+    session: Session, device_token: str | None, *, ip: str = "", user_agent: str = ""
+) -> tuple[Member, str] | str:
+    """Ждущий экран забирает сеанс, когда вход подтвердили. Иначе - его состояние.
+
+    Возвращает `(member, token)`, если устройство только что подтвердили, или
+    строку состояния: `pending` (ещё ждёт), `denied` (отклонили), `none`
+    (нечего забирать). Подтверждение забирается один раз: `decided_at`
+    снимается, чтобы метка устройства сама по себе не открывала сеанс потом.
+    """
+    if not device_token:
+        return "none"
+    dhash = _device_hash(device_token)
+    row = session.scalar(
+        sa.select(LoginDevice)
+        .where(LoginDevice.device_hash == dhash)
+        .order_by(LoginDevice.decided_at.is_(None), LoginDevice.last_seen_at.desc())
+    )
+    if row is None:
+        return "none"
+    if row.status == "pending":
+        return "pending"
+    decided = _aware(row.decided_at)
+    if row.status == "trusted" and decided is not None and (_now() - decided) < APPROVAL_WINDOW:
+        user = session.get(FinanceUser, row.user_id)
+        if user is None or user.status != "active":
+            return "none"
+        row.decided_at = None
+        row.last_seen_at = _now()
+        session.flush()
+        return _begin(session, user, ip=ip, user_agent=user_agent, title="вход с нового устройства")
+    if row.status == "denied" and decided is not None and (_now() - decided) < APPROVAL_WINDOW:
+        return "denied"
+    return "none"
+
+
 def login(
-    session: Session, *, email: str, password: str, user_agent: str = "", ip: str = ""
+    session: Session,
+    *,
+    email: str,
+    password: str,
+    user_agent: str = "",
+    ip: str = "",
+    device_token: str | None = None,
 ) -> tuple[Member, str]:
     """Вход по почте и паролю."""
     clean_email = normalize_email(email)
@@ -499,6 +685,9 @@ def login(
         raise AuthError("Неверная почта или пароль")
     if user.status != "active":
         raise AuthError("Учётная запись заблокирована")
+    # Пароль подошёл. Слабый, но уже заданный - только с доверенного
+    # устройства; с нового поднимет NeedsDeviceApproval до открытия сеанса.
+    _gate_device(session, user, password=password, device_token=device_token, ip=ip, user_agent=user_agent)
     return _success(session, user, key=clean_email, ip=ip, user_agent=user_agent, title="вход")
 
 
@@ -527,7 +716,13 @@ def phone_start(session: Session, *, phone: str, ip: str = "") -> str:
 
 
 def phone_login(
-    session: Session, *, phone: str, password: str, user_agent: str = "", ip: str = ""
+    session: Session,
+    *,
+    phone: str,
+    password: str,
+    user_agent: str = "",
+    ip: str = "",
+    device_token: str | None = None,
 ) -> tuple[Member, str]:
     clean = normalize_phone(phone)
     key = f"phone:{clean}"
@@ -551,6 +746,7 @@ def phone_login(
         raise AuthError(WRONG_PHONE_OR_PASSWORD)
     if user.status != "active":
         raise AuthError("Вход заблокирован администратором")
+    _gate_device(session, user, password=password, device_token=device_token, ip=ip, user_agent=user_agent)
     return _success(session, user, key=key, ip=ip, user_agent=user_agent, title="вход по номеру")
 
 
@@ -1280,22 +1476,29 @@ def set_email(session: Session, member: Member, *, email: str, password: str) ->
 
 __all__ = [
     "COOKIE_NAME",
+    "DEVICE_COOKIE",
+    "DEVICE_TTL",
     "INVITE_ROLES",
     "MIN_PASSWORD_LENGTH",
     "PENDING_WINDOW",
     "AuthError",
     "Member",
+    "NeedsDeviceApproval",
     "TooManyAttempts",
     "WindowExpired",
     "add_company",
     "change_role",
+    "claim_device",
     "companies_of",
+    "decide_device",
     "email_forgot",
     "end_sessions",
     "hash_password",
     "invite",
     "login",
     "logout",
+    "new_device_token",
+    "pending_devices",
     "members_of",
     "normalize_email",
     "normalize_phone",

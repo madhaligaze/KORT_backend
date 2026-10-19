@@ -253,7 +253,19 @@ def read_html(data: bytes) -> list[Table]:
 _SS = "urn:schemas-microsoft-com:office:spreadsheet"
 
 
+#: Объявление типа документа и сущностей. В таблице Excel 2003 их не бывает,
+#: а через них идут «миллиард смешков» и внешние сущности. Сам expat с 2.4
+#: такое режет, но защита не должна зависеть от версии библиотеки в образе.
+_DTD = re.compile(rb"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
+
+
 def read_xml2003(data: bytes) -> list[Table]:
+    text = data
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        # В UTF-16 знаки разметки разделены нулями - ищем в раскодированном.
+        text = data.decode("utf-16", errors="ignore").encode("utf-8")
+    if _DTD.search(text):
+        raise FormatError("Таблица Excel 2003 с объявлением DOCTYPE не принимается")
     try:
         root = ElementTree.fromstring(data)
     except ElementTree.ParseError as exc:
