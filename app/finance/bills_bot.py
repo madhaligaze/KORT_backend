@@ -1,26 +1,38 @@
-"""Бот «Не выставлены счета»: сводка в канал Telegram по книге-сводке, каждый будний день.
+"""Бот «Не выставлены счета»: книга-сводка → канал Telegram, круглосуточно.
 
 Что и когда
 ───────────
-В будни после `FINANCE_BILLS_HOUR` (по Астане) бот кладёт в канал один пост:
-просроченные счета по юрлицам - договор строкой, месяцы через запятую, - и те,
-что выставлять в ближайшие дни. Список - тот же, что в «Счета → Не
-выставлены» (`contracts/bills.py`): одна книга, одни слова, одно чтение.
+* **Сводка дня.** Каждый день после `FINANCE_BILLS_HOUR` (по Астане) бот
+  кладёт в канал один пост: просроченные счета по юрлицам - договор строкой,
+  месяцы через запятую, - и те, что выставлять в ближайшие дни. Дальше, до
+  конца дня, бот **правит этот же пост**, когда книга меняется: поставили
+  галочку «Счет» - строка уходит из поста.
+* **Новое - сразу.** В любое время суток и в выходные (решение владельца
+  22.10.2026, со звуком и ночью): счёт попал в «В ближайшие дни» («подошёл
+  срок») или в «Просрочено» («срок прошёл») - короткое сообщение именно о
+  нём. О каждом счёте в каждой группе - один раз (`BillNotice`); то, что уже
+  было в сводке дня, отдельным сообщением не повторяется.
+* **Выставлено - сообщения нет** (решение владельца 22.10.2026). Галочка в
+  книге убирает счёт из сообщения; не осталось ни одного - сообщение (и
+  сводка дня) удаляется. Сняли галочку - бот напишет о счёте заново.
+  Отметка одна - в книге: KORT её показывает, но не ставит.
 
-Дальше, до конца дня, бот **правит этот же пост**, когда книга меняется:
-поставили галочку «Счет» - строка уходит из поста. Новых сообщений за день
-нет: канал - напоминание, а не лента, и второй пост за день приучил бы его
-не читать.
+Список - тот же, что в «Счета → Не выставлены» (`contracts/bills.py`): одна
+книга, одни слова, одно чтение.
 
-Один пост на день
-─────────────────
+Не дважды
+─────────
 «Сводка за сегодня ушла» помнит база (`counters`: `bills.day`, `bills.post`,
-`bills.hash`), а не память процесса: перезапуск или два экземпляра API на
-время выкладки не выложат её дважды. Telegram не принял - день освобождается,
-и следующий проход (через минуту) пробует снова.
+`bills.hash`), «об этом счёте уже написали» - тоже (`bill_notices`), а не
+память процесса: перезапуск или два экземпляра API на время выкладки не
+повторят ни сводку, ни сообщение. Telegram не принял - день и счета
+освобождаются, и следующий проход (через минуту) пробует снова.
 
-Пустой список не выкладывается: «всё выставлено» каждое утро - шум, который
-перестают читать раньше, чем он понадобится.
+Первый запуск запоминает текущий список молча (`bills.seeded`): иначе в канал
+разом ушли бы все сотня строк, которые и так придут сводкой.
+
+Пустой список сводкой не выкладывается: «всё выставлено» каждое утро - шум,
+который перестают читать раньше, чем он понадобится.
 
 В пост влезает не больше `LIMIT` знаков (Telegram режет на 4096). Не влезло
 - хвост договоров заменяется строкой «и ещё N - в KORT»: полный список - по
@@ -36,7 +48,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable
 
@@ -45,8 +57,9 @@ from sqlalchemy.exc import IntegrityError
 
 from app.finance.config import finance_settings
 from app.finance.contracts import bills
-from app.finance.contracts.models import Counter, SummarySource
+from app.finance.contracts.models import BillNotice, Counter, SummarySource
 from app.finance.db import finance_session
+from app.finance.layout import norm
 from app.finance.support_bot import TZ, Bot, TelegramError
 
 log = logging.getLogger(__name__)
@@ -65,6 +78,9 @@ CHANNEL_TTL = 3600.0
 DAY = "bills.day"
 POST = "bills.post"
 HASH = "bills.hash"
+SEEDED = "bills.seeded"
+#: О чём пишется «сразу»: подошёл срок и срок прошёл. «Еще рано» и «Без срока» - нет.
+NOTIFY = (bills.SOON, bills.OVERDUE)
 
 WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 MONTHS = {
@@ -293,7 +309,7 @@ def keyboard() -> dict[str, Any] | None:
 
 
 def _ensure(workspace_id: uuid.UUID) -> None:
-    for name in (DAY, POST, HASH):
+    for name in (DAY, POST, HASH, SEEDED):
         try:
             with finance_session() as session:
                 if session.get(Counter, (workspace_id, name)) is None:
@@ -350,10 +366,10 @@ def release(workspace_id: uuid.UUID, day: int, previous: int) -> None:
 
 
 def due(now: datetime) -> bool:
-    """Пора выкладывать: будний день, от часа сводки до вечера."""
+    """Пора выкладывать сводку: любой день недели, от часа сводки до вечера."""
     hour = finance_settings.bills_hour_value
     local = now.astimezone(TZ)
-    return hour is not None and local.weekday() < 5 and hour <= local.hour < LAST_HOUR
+    return hour is not None and hour <= local.hour < LAST_HOUR
 
 
 def target_workspace() -> uuid.UUID | None:
@@ -378,10 +394,335 @@ def target_workspace() -> uuid.UUID | None:
     return None
 
 
-def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
-    """Один проход: выложить сводку дня, если пора, или поправить выложенную.
+def _send(api: Bot, chat: str, text: str) -> int:
+    sent = api.call(
+        "sendMessage",
+        {
+            "chat_id": chat,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": keyboard(),
+            "link_preview_options": {"is_disabled": True},
+        },
+    )
+    return int(sent["message_id"])
 
-    Возвращает, что сделано: `posted`, `edited`, `empty`, `same`, `wait` и т. п.
+
+def _edit(api: Bot, chat: str, message_id: int, text: str) -> None:
+    """Поправить своё сообщение. «Не изменилось» и «сообщения больше нет» - не ошибка."""
+    try:
+        api.call(
+            "editMessageText",
+            {
+                "chat_id": chat,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "reply_markup": keyboard(),
+                "link_preview_options": {"is_disabled": True},
+            },
+        )
+    except TelegramError as exc:
+        reason = str(exc).lower()
+        if "not modified" in reason:
+            return
+        if "not found" in reason:
+            log.info("счета: сообщение %s удалили из канала - править нечего", message_id)
+            return
+        raise
+
+
+def _delete(api: Bot, chat: str, message_id: int) -> bool:
+    """Удалить своё сообщение. `False` - Telegram не даёт (старше 48 часов): тогда оно правится."""
+    try:
+        api.call("deleteMessage", {"chat_id": chat, "message_id": message_id})
+    except TelegramError as exc:
+        if "not found" in str(exc).lower():
+            return True  # уже удалили руками
+        if exc.refused:
+            return False
+        raise
+    return True
+
+
+# ── Новое - сразу ────────────────────────────────────────────────────────────
+
+#: Сколько дней бот правит свои сообщения «новое»: позже их уже никто не читает.
+NOTICE_DAYS = 7
+NOTICE_TITLES = {bills.OVERDUE: "Срок прошёл", bills.SOON: "Подошёл срок"}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def notice_line(bill: bills.Bill) -> str:
+    """Счёт строкой сообщения «новое»: строки не сводятся в договоры - каждая уходит по своей галочке."""
+    if bill.group == bills.SOON:
+        return _soon_line(bill)
+    parts = [f"<b>{_esc(bill.customer)}</b>", _esc(bill.number), _esc(month_label(bill))]
+    if bill.amount:
+        parts.append(money(bill.amount))
+    parts.extend((_esc(bill.own), _esc(person(bill.staff))))
+    return "• " + " · ".join(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class NoticeRow:
+    group: str
+    line: str
+    done: bool
+
+
+def notice_text(rows: list[NoticeRow], at: datetime, *, edited_at: datetime | None = None) -> str:
+    """Сообщение «новое»: просрочка выше; выставленное из него уходит, итог - внизу.
+
+    «Всё выставлено» в тексте бывает, только если Telegram не дал удалить
+    сообщение (старше 48 часов): обычно оно удаляется целиком.
+    """
+    local = (at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)).astimezone(TZ)
+    lines = [f"<b>Счета: новое</b> · {local:%d.%m %H:%M}"]
+    pending = [row for row in rows if not row.done]
+    for group in (bills.OVERDUE, bills.SOON):
+        part = [row for row in pending if row.group == group]
+        if part:
+            lines.extend(("", f"<b>{NOTICE_TITLES[group]}: {len(part)}</b>"))
+            lines.extend(row.line for row in part)
+    done = len(rows) - len(pending)
+    if done and edited_at is not None:
+        tail = f"Выставлено {done} из {len(rows)}" if pending else "Всё выставлено"
+        lines.extend(("", f"<i>{tail} · обновлено {edited_at.astimezone(TZ):%H:%M}</i>"))
+    return "\n".join(lines)
+
+
+def _insert(session: Any, rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Записать, чего ещё нет, и вернуть записанное именно этим вызовом.
+
+    `ON CONFLICT DO NOTHING … RETURNING`: второй процесс, взявшийся за те же
+    счета, получит пустой ответ и не напишет о них второй раз.
+    """
+    if not rows:
+        return set()
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    statement = (
+        insert(BillNotice).values(rows).on_conflict_do_nothing().returning(BillNotice.key, BillNotice.bill_group)
+    )
+    return {(key, group) for key, group in session.execute(statement)}
+
+
+def _unique(items: Iterable[bills.Bill]) -> list[bills.Bill]:
+    seen: dict[tuple[str, str], bills.Bill] = {}
+    for bill in items:
+        if bill.group in NOTIFY:
+            seen.setdefault((bill.key, bill.group), bill)
+    return list(seen.values())
+
+
+def remember(workspace_id: uuid.UUID, board: bills.Board) -> None:
+    """Всё, что сейчас «подошёл срок» и «срок прошёл», - сказано (сводкой или первым запуском)."""
+    stamp = _now()
+    rows = [
+        {"workspace_id": workspace_id, "key": bill.key, "bill_group": bill.group, "notified_at": stamp, "line": ""}
+        for bill in _unique(board.bills)
+    ]
+    with finance_session() as session:
+        _insert(session, rows)
+    _set(workspace_id, SEEDED, 1)
+
+
+def _chunks(items: list[bills.Bill], at: datetime) -> list[list[bills.Bill]]:
+    """Счета - сообщениями не длиннее `LIMIT`: ночью после смены дня их бывает много."""
+    out: list[list[bills.Bill]] = [[]]
+    for bill in items:
+        trial = out[-1] + [bill]
+        text = notice_text([NoticeRow(item.group, notice_line(item), False) for item in trial], at)
+        if out[-1] and len(text) > LIMIT:
+            out.append([bill])
+        else:
+            out[-1] = trial
+    return [chunk for chunk in out if chunk]
+
+
+def notify_new(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now: datetime) -> int:
+    """Счета, впервые попавшие в «подошёл срок» или «срок прошёл», - сообщением сразу.
+
+    Возвращает, о скольких счетах написано. Telegram не принял - эти счета
+    снова «не сказаны», и следующий проход пишет о них заново.
+    """
+    fresh = _unique(board.bills)
+    if not fresh:
+        return 0
+    with finance_session() as session:
+        known = {
+            (key, group)
+            for key, group in session.execute(
+                sa.select(BillNotice.key, BillNotice.bill_group).where(BillNotice.workspace_id == workspace_id)
+            )
+        }
+    new = [bill for bill in fresh if (bill.key, bill.group) not in known]
+    if not new:
+        return 0
+    stamp = _now()
+    # Порядок строк сообщения живёт в `notified_at` (+1 мкс на строку): по нему
+    # правка собирает сообщение так же, как оно ушло.
+    rows = [
+        {
+            "workspace_id": workspace_id,
+            "key": bill.key,
+            "bill_group": bill.group,
+            "notified_at": stamp + timedelta(microseconds=index),
+            "line": notice_line(bill),
+        }
+        for index, bill in enumerate(new)
+    ]
+    with finance_session() as session:
+        claimed = _insert(session, rows)
+    mine = [bill for bill in new if (bill.key, bill.group) in claimed]
+    chunks = _chunks(mine, now)
+    for index, chunk in enumerate(chunks):
+        text = notice_text([NoticeRow(bill.group, notice_line(bill), False) for bill in chunk], now)
+        try:
+            message_id = _send(api, chat, text)
+        except TelegramError:
+            unsent = [bill for rest in chunks[index:] for bill in rest]
+            with finance_session() as session:
+                for bill in unsent:
+                    session.execute(
+                        sa.delete(BillNotice).where(
+                            BillNotice.workspace_id == workspace_id,
+                            BillNotice.key == bill.key,
+                            BillNotice.bill_group == bill.group,
+                        )
+                    )
+            raise
+        with finance_session() as session:
+            for bill in chunk:
+                session.execute(
+                    sa.update(BillNotice)
+                    .where(
+                        BillNotice.workspace_id == workspace_id,
+                        BillNotice.key == bill.key,
+                        BillNotice.bill_group == bill.group,
+                    )
+                    .values(message_id=message_id)
+                )
+    return len(mine)
+
+
+def _forget(workspace_id: uuid.UUID, items: Iterable[Any]) -> None:
+    with finance_session() as session:
+        for row in items:
+            session.execute(
+                sa.delete(BillNotice).where(
+                    BillNotice.workspace_id == workspace_id,
+                    BillNotice.key == row.key,
+                    BillNotice.bill_group == row.bill_group,
+                )
+            )
+
+
+def refresh_notices(
+    api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now: datetime
+) -> tuple[int, int]:
+    """Галочка в книге - счёт уходит из сообщения «новое»; выставлено всё - сообщение удаляется.
+
+    Решение владельца 22.10.2026: выставленное не висит в канале. Сообщение
+    удаляется вместе с памятью о нём - снимут галочку, и бот напишет о счёте
+    заново. Telegram не даёт удалить сообщение старше 48 часов - тогда оно
+    правится на «Всё выставлено».
+
+    Пропавшая из книги строка не считается выставленной: её могла на минуту
+    потерять формула сводки. Возвращает (поправлено, удалено) сообщений.
+    """
+    open_keys = {bill.key for bill in board.bills}
+    with finance_session() as session:
+        rows = list(
+            session.execute(
+                sa.select(BillNotice.key, BillNotice.bill_group, BillNotice.line, BillNotice.message_id,
+                          BillNotice.notified_at, BillNotice.done_at)
+                .where(
+                    BillNotice.workspace_id == workspace_id,
+                    BillNotice.message_id.is_not(None),
+                    BillNotice.notified_at >= _now() - timedelta(days=NOTICE_DAYS),
+                )
+                .order_by(BillNotice.notified_at)
+            )
+        )
+    messages: dict[int, list[Any]] = {}
+    for row in rows:
+        messages.setdefault(int(row.message_id), []).append(row)
+    edited = deleted = 0
+    for message_id, items in messages.items():
+        states = []
+        for row in items:
+            was = row.done_at is not None
+            if row.key in board.issued:
+                states.append(True)
+            elif row.key in open_keys:
+                states.append(False)
+            else:
+                states.append(was)
+        if states == [row.done_at is not None for row in items]:
+            continue
+        if all(states) and _delete(api, chat, message_id):
+            _forget(workspace_id, items)
+            deleted += 1
+            continue
+        text = notice_text(
+            [NoticeRow(row.bill_group, row.line, done) for row, done in zip(items, states)],
+            items[0].notified_at,
+            edited_at=now,
+        )
+        _edit(api, chat, message_id, text)
+        with finance_session() as session:
+            for row, done in zip(items, states):
+                session.execute(
+                    sa.update(BillNotice)
+                    .where(
+                        BillNotice.workspace_id == workspace_id,
+                        BillNotice.key == row.key,
+                        BillNotice.bill_group == row.bill_group,
+                    )
+                    .values(done_at=(row.done_at or now) if done else None)
+                )
+        edited += 1
+    return edited, deleted
+
+
+# ── Проход ───────────────────────────────────────────────────────────────────
+
+
+def _edit_digest(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now: datetime) -> str:
+    """Поправить сводку дня, если список изменился; выставлено всё - удалить её.
+
+    `""` - сводки сегодня нет (или её уже удалили).
+    """
+    if _value(workspace_id, DAY) != day_of(now):
+        return ""
+    post_id = _value(workspace_id, POST)
+    if not post_id:
+        return ""
+    post = render(board, now, edited=True)
+    if post is None:
+        if _delete(api, chat, post_id):
+            _set(workspace_id, POST, 0)
+            return "deleted"
+        post = Post(body="", text=_cleared(board, now))
+    if post.digest == _value(workspace_id, HASH):
+        return "same"
+    _edit(api, chat, post_id, post.text)
+    _set(workspace_id, HASH, post.digest)
+    return "edited"
+
+
+def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
+    """Один проход: сводка дня, если пора; новое - сообщением; правка своих сообщений.
+
+    Возвращает сделанное через «+» (`posted+notices-edited`), `wait` - ничего;
+    `no-workspace` / `no-board` - читать нечего.
     """
     now = now or datetime.now(timezone.utc)
     workspace_id = target_workspace()
@@ -392,6 +733,8 @@ def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
     board = slot.board if slot is not None else None
     if board is None:
         return "no-board"
+    _ensure(workspace_id)
+    done: list[str] = []
     day = day_of(now)
     if due(now):
         previous = claim(workspace_id, day)
@@ -399,51 +742,33 @@ def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
             post = render(board, now)
             if post is None:
                 _set(workspace_id, POST, 0)
-                return "empty"
-            try:
-                sent = api.call(
-                    "sendMessage",
-                    {
-                        "chat_id": chat,
-                        "text": post.text,
-                        "parse_mode": "HTML",
-                        "reply_markup": keyboard(),
-                        "link_preview_options": {"is_disabled": True},
-                    },
-                )
-            except TelegramError:
-                release(workspace_id, day, previous)
-                raise
-            _set(workspace_id, POST, int(sent["message_id"]))
-            _set(workspace_id, HASH, post.digest)
-            return "posted"
-    if _value(workspace_id, DAY) != day:
-        return "wait"
-    post_id = _value(workspace_id, POST)
-    if not post_id:
-        return "wait"
-    post = render(board, now, edited=True)
-    if post is None:
-        post = Post(body="", text=_cleared(board, now))
-    if post.digest == _value(workspace_id, HASH):
-        return "same"
-    try:
-        api.call(
-            "editMessageText",
-            {
-                "chat_id": chat,
-                "message_id": post_id,
-                "text": post.text,
-                "parse_mode": "HTML",
-                "reply_markup": keyboard(),
-                "link_preview_options": {"is_disabled": True},
-            },
-        )
-    except TelegramError as exc:
-        if "not modified" not in str(exc).lower():
-            raise
-    _set(workspace_id, HASH, post.digest)
-    return "edited"
+                done.append("empty")
+            else:
+                try:
+                    message_id = _send(api, chat, post.text)
+                except TelegramError:
+                    release(workspace_id, day, previous)
+                    raise
+                _set(workspace_id, POST, message_id)
+                _set(workspace_id, HASH, post.digest)
+                done.append("posted")
+            # Названное сводкой отдельным сообщением «новое» не повторяется.
+            remember(workspace_id, board)
+    if not _value(workspace_id, SEEDED):
+        remember(workspace_id, board)
+        done.append("seeded")
+    elif notify_new(api, chat, workspace_id, board, now):
+        done.append("noticed")
+    edited, deleted = refresh_notices(api, chat, workspace_id, board, now)
+    if edited:
+        done.append("notices-edited")
+    if deleted:
+        done.append("notices-deleted")
+    if "posted" not in done and "empty" not in done:
+        edited = _edit_digest(api, chat, workspace_id, board, now)
+        if edited:
+            done.append(edited)
+    return "+".join(done) or "wait"
 
 
 def _cleared(board: bills.Board, now: datetime) -> str:
@@ -512,7 +837,7 @@ async def run_forever() -> None:
             if stale:
                 await asyncio.to_thread(_remember_channel, api, chat)
             done = await asyncio.to_thread(tick, api, chat)
-            if done in ("posted", "edited"):
+            if done not in ("wait", "same"):
                 log.info("счета: %s", done)
         except asyncio.CancelledError:
             raise
@@ -530,7 +855,11 @@ __all__ = [
     "contracts",
     "due",
     "months_text",
+    "notice_text",
+    "notify_new",
+    "refresh_notices",
     "release",
+    "remember",
     "render",
     "run_forever",
     "target_workspace",

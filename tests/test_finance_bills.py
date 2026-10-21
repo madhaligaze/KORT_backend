@@ -293,13 +293,14 @@ def test_odna_svodka_v_den_i_pravka_posta(app: FastAPI, book) -> None:
     fresh()
     assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=6)) == "same"
 
-    # Выставили всё - пост так и говорит.
+    # Выставили всё - сводки дня в канале больше нет.
     for line in book["values"][1:]:
         if len(line) > 12:
             line[12] = "TRUE"
     fresh()
-    assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=7)) == "edited"
-    assert "Всё из этого списка выставлено" in api.sent("editMessageText")[-1]["text"]
+    assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=7)) == "deleted"
+    assert api.sent("deleteMessage") == [{"chat_id": CHAT, "message_id": 101}]
+    assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=8)) == "wait"
 
     # Завтра - новый пост.
     book["values"] = [list(line) for line in SHEET]
@@ -319,15 +320,119 @@ def test_otkaz_telegram_osvobozhdaet_den(app: FastAPI, book) -> None:
     assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=1)) == "posted"
 
 
-def test_vyhodnye_i_do_chasa_tishina(app: FastAPI, book) -> None:
+def test_svodka_kazhdyy_den_v_svoy_chas(app: FastAPI, book) -> None:
     owner = register(app)
     connect(owner)
     api = FakeBot()
-    saturday = datetime(2026, 10, 24, 5, 0, tzinfo=timezone.utc)
     early = datetime(2026, 10, 22, 3, 0, tzinfo=timezone.utc)  # 08:00 в Астане
     late = datetime(2026, 10, 22, 16, 0, tzinfo=timezone.utc)  # 21:00
-    assert [bills_bot.tick(api, CHAT, moment) for moment in (saturday, early, late)] == ["wait"] * 3
+    saturday = datetime(2026, 10, 24, 5, 0, tzinfo=timezone.utc)  # 10:00
+    # Первый проход запоминает список молча: сто строк придут сводкой, а не сообщениями.
+    assert bills_bot.tick(api, CHAT, early) == "seeded"
+    assert bills_bot.tick(api, CHAT, late) == "wait", "сводка дня после 20:00 не выходит"
     assert api.calls == []
+    assert bills_bot.tick(api, CHAT, saturday) == "posted", "и в выходные"
+    assert len(api.sent("sendMessage")) == 1
+
+
+NIGHT = datetime(2026, 10, 21, 22, 0, tzinfo=timezone.utc)  # 03:00 в Астане, четверг
+
+
+def test_novoe_srazu_a_vystavlennoe_udalyaetsya(app: FastAPI, book) -> None:
+    owner = register(app)
+    connect(owner)
+    api = FakeBot()
+    assert bills_bot.tick(api, CHAT, NIGHT) == "seeded"
+
+    meliora = book["values"][8]
+    meliora[12] = "1 день до выставления"  # в книге сменился день
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=1)) == "noticed"
+    [first] = api.sent("sendMessage")
+    assert "<b>Подошёл срок: 1</b>" in first["text"] and "• через 1 день · <b>Meliora</b>" in first["text"]
+    assert "ТОО Молфуд" not in first["text"], "старое уже сказано - не повторяется"
+    assert "disable_notification" not in first, "ночью - со звуком (решение владельца)"
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=2)) == "wait"
+
+    # Два новых разом - одно сообщение; выставили один - он уходит из сообщения.
+    meliora[12] = "Просрочка 1 день"
+    trio = book["values"][9]
+    trio[12] = "Просрочка 1 день"
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=3)) == "noticed"
+    second = api.sent("sendMessage")[-1]
+    assert "<b>Срок прошёл: 2</b>" in second["text"]
+    assert "<b>Meliora</b> · №ЮО/35-2 · окт" in second["text"] and "<b>TrioSynergy</b> · №ЮО/136" in second["text"]
+
+    meliora[12] = "TRUE"
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=4)) == "notices-edited+notices-deleted"
+    assert api.sent("deleteMessage") == [{"chat_id": CHAT, "message_id": 101}], "о Meliora одной - удалено"
+    [edit] = api.sent("editMessageText")
+    assert edit["message_id"] == 102 and "Meliora" not in edit["text"] and "TrioSynergy" in edit["text"]
+    assert "Выставлено 1 из 2 · обновлено 03:04" in edit["text"]
+
+    trio[12] = "TRUE"
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=5)) == "notices-deleted"
+    assert [item["message_id"] for item in api.sent("deleteMessage")] == [101, 102]
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=6)) == "wait"
+
+    # Сняли галочку - бот пишет о счёте заново.
+    meliora[12] = "Просрочка 1 день"
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=7)) == "noticed"
+    assert "Meliora" in api.sent("sendMessage")[-1]["text"]
+
+    # Утренняя сводка не превращает уже сказанное в новые сообщения.
+    assert bills_bot.tick(api, CHAT, NOW) == "posted"
+    assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=1)) == "same"
+    assert len(api.sent("sendMessage")) == 4
+
+
+def test_staroe_soobshchenie_ne_udalit_pravitsya(app: FastAPI, book) -> None:
+    """Telegram не удаляет сообщения старше 48 часов - тогда «Всё выставлено» текстом."""
+    owner = register(app)
+    connect(owner)
+    api = FakeBot()
+    assert bills_bot.tick(api, CHAT, NIGHT) == "seeded"
+    book["values"][8][12] = "Просрочка 1 день"
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=1)) == "noticed"
+    book["values"][8][12] = "TRUE"
+    fresh()
+
+    refuse = TelegramError("Bad Request: message can't be deleted", code=400)
+    real = api.call
+
+    def call(method: str, params: dict | None = None, **extra: object) -> dict:
+        if method == "deleteMessage":
+            raise refuse
+        return real(method, params, **extra)
+
+    api.call = call  # type: ignore[method-assign]
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=2)) == "notices-edited"
+    assert "Всё выставлено" in api.sent("editMessageText")[-1]["text"]
+
+
+def test_novoe_ne_teryaetsya_pri_otkaze_telegram(app: FastAPI, book) -> None:
+    owner = register(app)
+    connect(owner)
+    api = FakeBot()
+    assert bills_bot.tick(api, CHAT, NIGHT) == "seeded"
+    book["values"][7][12] = "Просрочка 1 день"  # TrioSynergy: подошёл срок → срок прошёл
+    fresh()
+    api.fail = TelegramError("нет связи с Telegram")
+    with pytest.raises(TelegramError):
+        bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=1))
+    api.fail = None
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=2)) == "noticed"
+    assert "TrioSynergy" in api.sent("sendMessage")[0]["text"]
+
+
+def test_pustoy_list_ne_znachit_vse_vystavleno() -> None:
+    with pytest.raises(bills.BillsError, match="ещё собирается"):
+        bills.build_board([HEADER], title="", worksheet="Сводка")
 
 
 def test_nevernyy_chas_vyklyuchaet_tolko_bota(monkeypatch) -> None:

@@ -128,6 +128,14 @@ def _paid(value: Any) -> str:
     return "part" if text.startswith("част") else ""
 
 
+def bill_key(own: str, customer: str, number: str, month: str) -> str:
+    """Чей это счёт: юрлицо, клиент, № договора, месяц строки - без оформления.
+
+    Не номер строки: лист сводки сортирует формула, и строка переезжает.
+    """
+    return "|".join(norm(part) for part in (own, customer, number, month))
+
+
 def _int(value: Any) -> int | None:
     try:
         return int(str(value or "").strip())
@@ -155,6 +163,10 @@ class Bill:
     paid: str
     status: str
     note: str
+
+    @property
+    def key(self) -> str:
+        return bill_key(self.own, self.customer, self.number, self.month)
 
     def out(self) -> dict[str, Any]:
         return {
@@ -192,6 +204,10 @@ class Board:
     bills: list[Bill] = field(default_factory=list)
     rows: int = 0
     drift: str = ""
+    #: Ключи строк с галочкой «Счет» (`bill_key`): бот убирает их из своих
+    #: сообщений. Пропавшая строка - не «выставлен»: её могла на минуту
+    #: потерять формула сводки.
+    issued: set[str] = field(default_factory=set)
 
     def of(self, group: str) -> list[Bill]:
         return [bill for bill in self.bills if bill.group == group]
@@ -217,6 +233,7 @@ def build_board(
     except LayoutError as exc:
         raise BillsError(str(exc)) from exc
     bills: list[Bill] = []
+    issued: set[str] = set()
     count = 0
     for offset, raw in enumerate(values[1:]):
         row = [str(cell) for cell in raw]
@@ -228,6 +245,9 @@ def build_board(
         text = layout.cell(row, "bill").strip()
         group = state_of(text)
         if group is None:
+            issued.add(
+                bill_key(layout.cell(row, "own").strip(), customer, number, layout.cell(row, "month").strip())
+            )
             continue
         amount_text = layout.cell(row, "amount").strip()
         bills.append(
@@ -250,6 +270,10 @@ def build_board(
                 note=layout.cell(row, "note").strip(),
             )
         )
+    if not count:
+        # Пустой лист под шапкой - это сводка, которую формула ещё собирает, а не
+        # «всё выставлено»: прежнее чтение остаётся, бот не правит пост в пустоту.
+        raise BillsError(f"В листе «{worksheet}» нет ни одной строки договора - книга, похоже, ещё собирается")
     bills.sort(key=_order)
     return Board(
         read_at=datetime.now(timezone.utc),
@@ -259,6 +283,7 @@ def build_board(
         bills=bills,
         rows=count,
         drift=layout.describe_drift(),
+        issued=issued,
     )
 
 
@@ -414,6 +439,7 @@ __all__ = [
     "SOON",
     "UNDATED",
     "badge",
+    "bill_key",
     "board_out",
     "build_board",
     "counts_out",
