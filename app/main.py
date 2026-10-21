@@ -168,6 +168,11 @@ async def lifespan(_: FastAPI):
             from app.finance import bills_bot
 
             bills_task = asyncio.create_task(bills_bot.run_forever())
+        elif finance_settings.bills_bot_token.strip() and finance_settings.bills_hour_value is None:
+            log.error(
+                "finance: бот счетов выключен - FINANCE_BILLS_HOUR=%r, а нужен час 0-23 (по Астане)",
+                finance_settings.bills_hour,
+            )
     except Exception as exc:  # noqa: BLE001
         log.warning("finance: фоновая задача не запустилась: %s", exc)
 

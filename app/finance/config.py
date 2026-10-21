@@ -84,7 +84,10 @@ class FinanceSettings(BaseSettings):
     bills_bot_token: str = Field(default="", validation_alias=AliasChoices("FINANCE_BILLS_BOT_TOKEN"))
     bills_chat_id: str = Field(default="", validation_alias=AliasChoices("FINANCE_BILLS_CHAT_ID"))
     bills_workspace_id: str = Field(default="", validation_alias=AliasChoices("FINANCE_BILLS_WORKSPACE_ID"))
-    bills_hour: int = Field(default=10, ge=0, le=23, validation_alias=AliasChoices("FINANCE_BILLS_HOUR"))
+    #: Строкой, а не `int` с границами: «24» в переменной (22.10.2026, Render)
+    #: роняло весь API на старте. Неверный час выключает только бота - см.
+    #: `bills_hour_value` и `bills_ready`.
+    bills_hour: str = Field(default="10", validation_alias=AliasChoices("FINANCE_BILLS_HOUR"))
     app_url: str = Field(default="", validation_alias=AliasChoices("FINANCE_APP_URL"))
 
     @property
@@ -104,7 +107,20 @@ class FinanceSettings(BaseSettings):
         Токен - тоже только у одного API: «сводка за сегодня уже ушла» помнит
         база, и локальный стенд со своей базой выложил бы в канал вторую.
         """
-        return bool(self.bills_bot_token.strip().strip('"') and self.bills_chat_id.strip().strip('"'))
+        return bool(
+            self.bills_bot_token.strip().strip('"')
+            and self.bills_chat_id.strip().strip('"')
+            and self.bills_hour_value is not None
+        )
+
+    @property
+    def bills_hour_value(self) -> int | None:
+        """Час сводки 0-23; иное - `None`: бот не выкладывает, а не угадывает час."""
+        try:
+            hour = int(str(self.bills_hour).strip().strip('"'))
+        except ValueError:
+            return None
+        return hour if 0 <= hour <= 23 else None
 
     @property
     def import_max_bytes(self) -> int:

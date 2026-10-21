@@ -330,6 +330,20 @@ def test_vyhodnye_i_do_chasa_tishina(app: FastAPI, book) -> None:
     assert api.calls == []
 
 
+def test_nevernyy_chas_vyklyuchaet_tolko_bota(monkeypatch) -> None:
+    """«24» в FINANCE_BILLS_HOUR роняло весь API на старте (Render, 22.10.2026)."""
+    from app.finance.config import FinanceSettings
+
+    for raw in ("24", "-1", "десять", ""):
+        monkeypatch.setenv("FINANCE_BILLS_HOUR", raw)
+        monkeypatch.setenv("FINANCE_BILLS_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("FINANCE_BILLS_CHAT_ID", CHAT)
+        settings = FinanceSettings()
+        assert settings.bills_hour_value is None and not settings.bills_ready, raw
+    monkeypatch.setenv("FINANCE_BILLS_HOUR", '"9"')
+    assert FinanceSettings().bills_hour_value == 9 and FinanceSettings().bills_ready
+
+
 def test_bez_svodki_bot_molchit(app: FastAPI, book) -> None:
     register(app)
     assert bills_bot.tick(FakeBot(), CHAT, NOW) == "no-workspace"

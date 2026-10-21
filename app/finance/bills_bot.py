@@ -351,8 +351,9 @@ def release(workspace_id: uuid.UUID, day: int, previous: int) -> None:
 
 def due(now: datetime) -> bool:
     """Пора выкладывать: будний день, от часа сводки до вечера."""
+    hour = finance_settings.bills_hour_value
     local = now.astimezone(TZ)
-    return local.weekday() < 5 and finance_settings.bills_hour <= local.hour < LAST_HOUR
+    return hour is not None and local.weekday() < 5 and hour <= local.hour < LAST_HOUR
 
 
 def target_workspace() -> uuid.UUID | None:
@@ -490,7 +491,7 @@ def channel_out(workspace_id: uuid.UUID) -> dict[str, Any] | None:
     chat = _clean(finance_settings.bills_chat_id)
     if not url and chat.startswith("@"):
         url = f"https://t.me/{chat[1:]}"
-    return {"title": title or chat, "url": url, "hour": finance_settings.bills_hour}
+    return {"title": title or chat, "url": url, "hour": finance_settings.bills_hour_value}
 
 
 # ── Фоновый цикл ─────────────────────────────────────────────────────────────
