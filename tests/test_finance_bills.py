@@ -133,11 +133,13 @@ def test_post_dogovor_strokoy() -> None:
     board = bills.build_board(SHEET, title="Осн.Общая сводка BBC 2026", worksheet="Сводка")
     post = bills_bot.render(board, NOW)
     assert post is not None
-    assert post.text.startswith("<b>Не выставлены счета</b> · четверг, 22.10.2026")
-    assert "<b>Просрочено: 5 счетов на 300 000</b>" in post.text
-    assert "• <b>ТОО Молфуд</b> · №RENT/93 · июн-авг, окт · 200 000" in post.text
+    assert post.text.startswith("<b>Не выставлены счета</b> · четверг, 22.10 10:30")
+    # Окно 22.10 - сентябрь и октябрь: июнь-август Молфуда - старый хвост одной строкой.
+    assert "<b>Просрочено: 2 счёта на 150 000</b>" in post.text
+    assert "• <b>ТОО Молфуд</b> · №RENT/93 · окт · 50 000" in post.text
+    assert "Старый хвост, раньше сентября: 3 счёта на 150 000 - список в KORT" in post.text
+    assert "июн" not in post.text
     assert "• <b>ADK Home</b> · №ОБО/110 · окт · 100 000 · Меруерт" in post.text
-    assert post.text.index("<i>BBC Omar</i>") < post.text.index("<i>BBC</i>"), "больше просрочки - выше"
     assert "• через 3 дня · <b>TrioSynergy</b> · №ЮО/58 · BBCL" in post.text
     assert "Без срока в книге: 2" in post.text
     assert "Meliora" not in post.text, "«Еще рано» в пост не идёт"
@@ -200,7 +202,8 @@ def finance_db(tmp_path, monkeypatch):
     monkeypatch.setattr(finance_settings, "bills_bot_token", "test-token")
     monkeypatch.setattr(finance_settings, "bills_chat_id", CHAT)
     monkeypatch.setattr(finance_settings, "bills_workspace_id", "")
-    monkeypatch.setattr(finance_settings, "bills_hour", 10)
+    monkeypatch.setattr(finance_settings, "bills_hour", "10")
+    monkeypatch.setattr(finance_settings, "bills_every", "3")
     monkeypatch.setattr(finance_settings, "app_url", "https://kort.cards")
     auth._ATTEMPTS.clear()
     bills._slots.clear()
@@ -280,7 +283,7 @@ def test_odna_svodka_v_den_i_pravka_posta(app: FastAPI, book) -> None:
 
     # Второй проход и «второй процесс» (тот же день в базе) - не выкладывают снова.
     assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=1)) == "same"
-    assert bills_bot.claim(bills_bot.target_workspace(), bills_bot.day_of(NOW)) is None
+    assert bills_bot.claim(bills_bot.target_workspace(), bills_bot.slot_of(NOW)) is None
     assert len(api.sent("sendMessage")) == 1 and not api.sent("editMessageText")
 
     # В книге поставили галочку - пост правится, нового нет.
@@ -354,15 +357,20 @@ def test_novoe_srazu_a_vystavlennoe_udalyaetsya(app: FastAPI, book) -> None:
     assert "disable_notification" not in first, "ночью - со звуком (решение владельца)"
     assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=2)) == "wait"
 
+    # Старый хвост «новым» не бывает: в напоминании он одной строкой.
+    book["values"][10][12] = "Просрочка более 5 дней"  # «Старые», май
+    fresh()
+    assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=2, seconds=30)) == "wait"
+
     # Два новых разом - одно сообщение; выставили один - он уходит из сообщения.
     meliora[12] = "Просрочка 1 день"
     trio = book["values"][9]
-    trio[12] = "Просрочка 1 день"
+    trio[1], trio[2], trio[12] = "10", "ОКТЯБРЬ 2026", "Просрочка 1 день"
     fresh()
     assert bills_bot.tick(api, CHAT, NIGHT + timedelta(minutes=3)) == "noticed"
     second = api.sent("sendMessage")[-1]
     assert "<b>Срок прошёл: 2</b>" in second["text"]
-    assert "<b>Meliora</b> · №ЮО/35-2 · окт" in second["text"] and "<b>TrioSynergy</b> · №ЮО/136" in second["text"]
+    assert "<b>Meliora</b> · №ЮО/35-2 · окт" in second["text"] and "<b>TrioSynergy</b> · №ЮО/136 · окт" in second["text"]
 
     meliora[12] = "TRUE"
     fresh()
@@ -388,6 +396,37 @@ def test_novoe_srazu_a_vystavlennoe_udalyaetsya(app: FastAPI, book) -> None:
     assert bills_bot.tick(api, CHAT, NOW) == "posted"
     assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=1)) == "same"
     assert len(api.sent("sendMessage")) == 4
+
+
+def test_napominanie_kazhdye_tri_chasa(app: FastAPI, book) -> None:
+    """10, 13, 16, 19: новое напоминание звенит, прошлое удаляется; строка - что изменилось."""
+    owner = register(app)
+    connect(owner)
+    api = FakeBot()
+    morning = datetime(2026, 10, 22, 5, 0, tzinfo=timezone.utc)  # 10:00 в Астане
+    assert bills_bot.tick(api, CHAT, morning) == "posted"
+    assert bills_bot.tick(api, CHAT, morning + timedelta(hours=2, minutes=59)) == "same", "12:59 - ещё 10:00"
+
+    assert bills_bot.tick(api, CHAT, morning + timedelta(hours=3)) == "posted"
+    second = api.sent("sendMessage")[-1]
+    assert second["text"].startswith("<b>Не выставлены счета</b> · четверг, 22.10 13:00\n<i>С 10:00 без изменений</i>")
+    assert api.sent("deleteMessage") == [{"chat_id": CHAT, "message_id": 101}], "прошлое напоминание - прочь"
+
+    book["values"][5][12] = "TRUE"  # ADK Home выставили
+    book["values"][8][12] = "2 дня до выставления"  # Meliora подошла
+    fresh()
+    # Напоминание назвало Meliora - отдельного «новое» о ней нет.
+    assert bills_bot.tick(api, CHAT, morning + timedelta(hours=6)) == "posted"
+    assert "С 13:00: выставлено 1, добавилось 1" in api.sent("sendMessage")[-1]["text"]
+
+    late = morning + timedelta(hours=10)  # 20:00 - напоминаний больше нет
+    reminders = len([item for item in api.sent("sendMessage") if "Не выставлены счета" in item["text"]])
+    assert "posted" not in bills_bot.tick(api, CHAT, late)
+    assert bills_bot.tick(api, CHAT, morning + timedelta(hours=22)) != "posted", "08:00 - ещё рано"
+    assert len([item for item in api.sent("sendMessage") if "Не выставлены счета" in item["text"]]) == reminders
+    assert bills_bot.slot_of(morning + timedelta(hours=24)) == 2026102310
+    assert bills_bot.tick(api, CHAT, morning + timedelta(hours=24)) == "posted"
+    assert "<i>С 22.10 16:00" in api.sent("sendMessage")[-1]["text"], "вчерашнее - с датой"
 
 
 def test_staroe_soobshchenie_ne_udalit_pravitsya(app: FastAPI, book) -> None:
@@ -439,13 +478,17 @@ def test_nevernyy_chas_vyklyuchaet_tolko_bota(monkeypatch) -> None:
     """«24» в FINANCE_BILLS_HOUR роняло весь API на старте (Render, 22.10.2026)."""
     from app.finance.config import FinanceSettings
 
+    monkeypatch.setenv("FINANCE_BILLS_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("FINANCE_BILLS_CHAT_ID", CHAT)
     for raw in ("24", "-1", "десять", ""):
         monkeypatch.setenv("FINANCE_BILLS_HOUR", raw)
-        monkeypatch.setenv("FINANCE_BILLS_BOT_TOKEN", "test-token")
-        monkeypatch.setenv("FINANCE_BILLS_CHAT_ID", CHAT)
         settings = FinanceSettings()
         assert settings.bills_hour_value is None and not settings.bills_ready, raw
     monkeypatch.setenv("FINANCE_BILLS_HOUR", '"9"')
+    for raw in ("0", "25", "три"):
+        monkeypatch.setenv("FINANCE_BILLS_EVERY", raw)
+        assert not FinanceSettings().bills_ready, raw
+    monkeypatch.setenv("FINANCE_BILLS_EVERY", "2")
     assert FinanceSettings().bills_hour_value == 9 and FinanceSettings().bills_ready
 
 
@@ -463,7 +506,7 @@ def test_razdel_ne_vystavleny(app: FastAPI, book) -> None:
     assert data["counts"]["overdue"] == 5 and data["counts"]["overdue_total"] == "300000"
     assert data["source"]["title"] == "Осн.Общая сводка BBC 2026" and data["source"]["error"] == ""
     assert data["items"][0]["customer"] == "ТОО Молфуд" and data["items"][0]["period_from"] == "2026-06-04"
-    assert data["channel"]["url"] == "https://t.me/bbc_bills" and data["channel"]["hour"] == 10
+    assert data["channel"]["url"] == "https://t.me/bbc_bills" and data["channel"]["hours"] == [10, 13, 16, 19]
     me = owner.get(f"{BASE}/auth/me").json()
     assert me["bills"] == {"overdue": 5, "soon": 1}
 

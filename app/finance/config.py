@@ -25,8 +25,10 @@
                                 Без обоих список живёт только в «Счетах»
     FINANCE_BILLS_WORKSPACE_ID - компания, чью книгу-сводку читает бот. Пусто -
                                 та единственная, у которой сводка подключена
-    FINANCE_BILLS_HOUR        - час сводки дня по Астане (UTC+5), 0-23 (10);
-                                новое бот пишет сразу, в любое время
+    FINANCE_BILLS_HOUR        - час первого напоминания по Астане (UTC+5),
+                                0-19 (10); новое бот пишет сразу, в любое время
+    FINANCE_BILLS_EVERY       - через сколько часов повторять напоминание до
+                                20:00 (3: 10, 13, 16, 19)
     FINANCE_APP_URL           - адрес KORT для кнопки «Открыть в KORT»
                                 (https://kort.cards). Пусто - первый https из
                                 ALLOWED_ORIGINS
@@ -89,6 +91,7 @@ class FinanceSettings(BaseSettings):
     #: роняло весь API на старте. Неверный час выключает только бота - см.
     #: `bills_hour_value` и `bills_ready`.
     bills_hour: str = Field(default="10", validation_alias=AliasChoices("FINANCE_BILLS_HOUR"))
+    bills_every: str = Field(default="3", validation_alias=AliasChoices("FINANCE_BILLS_EVERY"))
     app_url: str = Field(default="", validation_alias=AliasChoices("FINANCE_APP_URL"))
 
     @property
@@ -112,16 +115,20 @@ class FinanceSettings(BaseSettings):
             self.bills_bot_token.strip().strip('"')
             and self.bills_chat_id.strip().strip('"')
             and self.bills_hour_value is not None
+            and self.bills_every_value is not None
         )
 
     @property
     def bills_hour_value(self) -> int | None:
-        """Час сводки 0-23; иное - `None`: бот не выкладывает, а не угадывает час."""
-        try:
-            hour = int(str(self.bills_hour).strip().strip('"'))
-        except ValueError:
-            return None
-        return hour if 0 <= hour <= 23 else None
+        """Час первого напоминания 0-23; иное - `None`: бот не выкладывает, а не угадывает час."""
+        hour = _whole(self.bills_hour)
+        return hour if hour is not None and 0 <= hour <= 23 else None
+
+    @property
+    def bills_every_value(self) -> int | None:
+        """Шаг напоминаний в часах 1-24; иное - `None`, как и у часа."""
+        every = _whole(self.bills_every)
+        return every if every is not None and 1 <= every <= 24 else None
 
     @property
     def import_max_bytes(self) -> int:
@@ -144,6 +151,13 @@ class FinanceSettings(BaseSettings):
             return True
         path = self.credentials_path
         return path is not None and path.is_file()
+
+
+def _whole(value: object) -> int | None:
+    try:
+        return int(str(value).strip().strip('"'))
+    except ValueError:
+        return None
 
 
 @lru_cache

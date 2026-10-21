@@ -1,38 +1,49 @@
 """Бот «Не выставлены счета»: книга-сводка → канал Telegram, круглосуточно.
 
+Решения владельца 22.10.2026 (ночь), по порядку, как они складывались.
+
 Что и когда
 ───────────
-* **Сводка дня.** Каждый день после `FINANCE_BILLS_HOUR` (по Астане) бот
-  кладёт в канал один пост: просроченные счета по юрлицам - договор строкой,
-  месяцы через запятую, - и те, что выставлять в ближайшие дни. Дальше, до
-  конца дня, бот **правит этот же пост**, когда книга меняется: поставили
-  галочку «Счет» - строка уходит из поста.
-* **Новое - сразу.** В любое время суток и в выходные (решение владельца
-  22.10.2026, со звуком и ночью): счёт попал в «В ближайшие дни» («подошёл
-  срок») или в «Просрочено» («срок прошёл») - короткое сообщение именно о
-  нём. О каждом счёте в каждой группе - один раз (`BillNotice`); то, что уже
-  было в сводке дня, отдельным сообщением не повторяется.
-* **Выставлено - сообщения нет** (решение владельца 22.10.2026). Галочка в
-  книге убирает счёт из сообщения; не осталось ни одного - сообщение (и
-  сводка дня) удаляется. Сняли галочку - бот напишет о счёте заново.
-  Отметка одна - в книге: KORT её показывает, но не ставит.
+* **Окно - текущий и прошлый месяц.** Поимённо бот ведёт счета месяца строки
+  не раньше прошлого (22.10 - сентябрь и октябрь, с 01.11 - октябрь и
+  ноябрь). Всё старше - «старый хвост» одной строкой с числом и суммой: 84
+  просроченных разом в каждом посте - шум, а хвост - это уборка книги, его
+  список в KORT. Окно сдвигается само.
+* **Напоминание каждые `FINANCE_BILLS_EVERY` часов днём** - с
+  `FINANCE_BILLS_HOUR` до 20:00 по Астане (10, 13, 16, 19), каждый день.
+  Новое напоминание звенит, а прошлое бот удаляет: в канале одно актуальное,
+  копий нет. Повторяется только невыставленное, и строка под заголовком
+  говорит, что изменилось с прошлого («С 13:00: выставлено 3, добавилось 1»).
+  Между напоминаниями бот **правит текущее**: поставили галочку «Счет» -
+  строка уходит.
+* **Новое - сразу.** В любое время суток и в выходные, со звуком и ночью:
+  счёт из окна попал в «В ближайшие дни» («подошёл срок») или в
+  «Просрочено» («срок прошёл») - короткое сообщение именно о нём. О каждом
+  счёте в каждой группе - один раз (`BillNotice`); названное напоминанием
+  отдельным сообщением не повторяется.
+* **Выставлено - сообщения нет.** Галочка в книге убирает счёт из
+  сообщения; не осталось ни одного - сообщение (и напоминание) удаляется.
+  Сняли галочку - бот напишет о счёте заново. Отметка одна - в книге: KORT
+  её показывает, но не ставит.
 
 Список - тот же, что в «Счета → Не выставлены» (`contracts/bills.py`): одна
-книга, одни слова, одно чтение.
+книга, одни слова, одно чтение. В KORT - весь, с хвостом.
 
 Не дважды
 ─────────
-«Сводка за сегодня ушла» помнит база (`counters`: `bills.day`, `bills.post`,
-`bills.hash`), «об этом счёте уже написали» - тоже (`bill_notices`), а не
-память процесса: перезапуск или два экземпляра API на время выкладки не
-повторят ни сводку, ни сообщение. Telegram не принял - день и счета
-освобождаются, и следующий проход (через минуту) пробует снова.
+«Напоминание за этот час ушло» помнит база (`counters`: `bills.day` - номер
+часа `ГГГГММДДЧЧ`, `bills.post`, `bills.hash`), «об этом счёте уже написали»
+- тоже (`bill_notices`), а не память процесса: перезапуск или два экземпляра
+API на время выкладки не повторят ни напоминание, ни сообщение. Telegram не
+принял - час и счета освобождаются, и следующий проход (через минуту)
+пробует снова. Строка «что изменилось» помнится в процессе: после
+перезапуска одно напоминание выходит без неё.
 
 Первый запуск запоминает текущий список молча (`bills.seeded`): иначе в канал
-разом ушли бы все сотня строк, которые и так придут сводкой.
+разом ушли бы все сотня строк, которые и так придут напоминанием.
 
-Пустой список сводкой не выкладывается: «всё выставлено» каждое утро - шум,
-который перестают читать раньше, чем он понадобится.
+Пустое напоминание не выкладывается: «всё выставлено» каждые три часа - шум.
+Хвост без счетов из окна напоминается только первым напоминанием дня.
 
 В пост влезает не больше `LIMIT` знаков (Telegram режет на 4096). Не влезло
 - хвост договоров заменяется строкой «и ещё N - в KORT»: полный список - по
@@ -67,8 +78,7 @@ log = logging.getLogger(__name__)
 #: Сколько знаков поста занимает список. Telegram принимает 4096; запас - на
 #: шапку и подвал, которые дописываются после.
 LIMIT = 3700
-#: Позже этого часа сводка дня не выкладывается: пост в 23:00 никто не прочтёт
-#: как утреннее напоминание.
+#: Напоминания - до этого часа (не включая): ночью звенит только «новое - сразу».
 LAST_HOUR = 20
 #: Как часто проверять, не пора ли выложить или поправить пост.
 TICK = 60
@@ -97,6 +107,12 @@ MONTHS = {
     "ноябрь": "ноя",
     "декабрь": "дек",
 }
+MONTH_NUMBERS = {name: index for index, name in enumerate(MONTHS, start=1)}
+#: «раньше сентября» - в строке хвоста.
+MONTHS_GENITIVE = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
 
 
 def _clean(value: str) -> str:
@@ -142,6 +158,32 @@ def month_label(bill: bills.Bill) -> str:
     if not words:
         return bill.period_from.strftime("%m.%Y") if bill.period_from else "?"
     return MONTHS.get(words[0], words[0])
+
+
+def month_of(bill: bills.Bill) -> tuple[int, int] | None:
+    """Месяц строки (год, месяц): из «ОКТЯБРЬ 2026», иначе - из «Периода с».
+
+    «Старые (до Май/Июня 2026)» - месяц по периоду: в окно такая строка не
+    попадает. Ни того, ни другого - `None`, и строка идёт в хвост.
+    """
+    words = bill.month.lower().split()
+    if len(words) == 2 and words[0] in MONTH_NUMBERS and words[1].isdigit():
+        return int(words[1]), MONTH_NUMBERS[words[0]]
+    if bill.period_from is not None:
+        return bill.period_from.year, bill.period_from.month
+    return None
+
+
+def window_start(now: datetime) -> tuple[int, int]:
+    """Первый месяц окна - прошлый месяц по Астане."""
+    local = now.astimezone(TZ)
+    return (local.year, local.month - 1) if local.month > 1 else (local.year - 1, 12)
+
+
+def in_window(bill: bills.Bill, now: datetime) -> bool:
+    """Счёт ведётся поимённо: его месяц - прошлый, текущий или позже."""
+    month = month_of(bill)
+    return month is not None and month >= window_start(now)
 
 
 def months_text(items: list[bills.Bill]) -> str:
@@ -242,20 +284,54 @@ def _soon_line(bill: bills.Bill) -> str:
     return "• " + " · ".join(part for part in parts if part)
 
 
-def render(board: bills.Board, now: datetime, *, edited: bool = False) -> Post | None:
-    """Пост дня или `None`, если выставлять нечего."""
-    overdue = board.of(bills.OVERDUE)
-    soon = board.of(bills.SOON)
-    if not overdue and not soon:
+def split(board: bills.Board, now: datetime) -> tuple[list[bills.Bill], list[bills.Bill], list[bills.Bill]]:
+    """Просрочено и «в ближайшие дни» из окна - и старый хвост (то же, но месяцем раньше окна)."""
+    overdue = [bill for bill in board.of(bills.OVERDUE) if in_window(bill, now)]
+    soon = [bill for bill in board.of(bills.SOON) if in_window(bill, now)]
+    tail = [bill for bill in board.bills if bill.group in NOTIFY and not in_window(bill, now)]
+    return overdue, soon, tail
+
+
+def since_line(previous: frozenset[str], previous_at: datetime, board: bills.Board, now: datetime) -> str:
+    """«С 13:00: выставлено 3, добавилось 1» - чем это напоминание отличается от прошлого."""
+    overdue, soon, _ = split(board, now)
+    current = {bill.key for bill in overdue + soon}
+    issued = len(previous & board.issued)
+    added = len(current - previous)
+    before, local = previous_at.astimezone(TZ), now.astimezone(TZ)
+    at = f"С {before:%H:%M}" if before.date() == local.date() else f"С {before:%d.%m %H:%M}"
+    parts = []
+    if issued:
+        parts.append(f"выставлено {issued}")
+    if added:
+        parts.append(f"добавилось {added}")
+    return f"{at}: {', '.join(parts)}" if parts else f"{at} без изменений"
+
+
+def render(
+    board: bills.Board,
+    now: datetime,
+    *,
+    at: datetime | None = None,
+    edited: bool = False,
+    note: str = "",
+    tail_alone: bool = False,
+) -> Post | None:
+    """Напоминание или `None`, если напоминать не о чем.
+
+    `at` - час напоминания в заголовке (при правке - тот же, что был);
+    `note` - строка «что изменилось»; `tail_alone` - выложить и тогда, когда
+    в окне пусто, а хвост есть (первое напоминание дня).
+    """
+    overdue, soon, tail = split(board, now)
+    if not overdue and not soon and not (tail and tail_alone):
         return None
     lines: list[str] = []
 
     if overdue:
         count = len(overdue)
-        lines.append(
-            f"<b>Просрочено: {count} {plural(count, 'счёт', 'счёта', 'счетов')}"
-            f" на {money(board.total(bills.OVERDUE))}</b>"
-        )
+        total = sum((bill.amount or Decimal("0") for bill in overdue), Decimal("0"))
+        lines.append(f"<b>Просрочено: {count} {plural(count, 'счёт', 'счёта', 'счетов')} на {money(total)}</b>")
         by_own: dict[str, list[Contract]] = {}
         for contract in contracts(overdue):
             by_own.setdefault(contract.own, []).append(contract)
@@ -285,14 +361,25 @@ def render(board: bills.Board, now: datetime, *, edited: bool = False) -> Post |
     if hidden:
         lines.append("")
         lines.append(f"И ещё {hidden} {plural(hidden, 'договор', 'договора', 'договоров')} - полный список в KORT")
+    if tail:
+        start = window_start(now)
+        total = sum((bill.amount or Decimal("0") for bill in tail), Decimal("0"))
+        lines.append("")
+        lines.append(
+            f"Старый хвост, раньше {MONTHS_GENITIVE[start[1] - 1]}: {len(tail)} "
+            f"{plural(len(tail), 'счёт', 'счёта', 'счетов')} на {money(total)} - список в KORT"
+        )
     undated = len(board.of(bills.UNDATED))
     if undated:
         lines.append("")
         lines.append(f"Без срока в книге: {undated} - в KORT, «Счета → Не выставлены»")
-    body = "\n".join(lines)
+    body = "\n".join(lines).strip("\n")
 
     local = now.astimezone(TZ)
-    head = f"<b>Не выставлены счета</b> · {WEEKDAYS[local.weekday()]}, {local:%d.%m.%Y}"
+    when = (at or now).astimezone(TZ)
+    head = f"<b>Не выставлены счета</b> · {WEEKDAYS[when.weekday()]}, {when:%d.%m %H:%M}"
+    if note:
+        head += f"\n<i>{_esc(note)}</i>"
     source = _esc(board.title or "книга-сводка")
     foot = f"<i>По книге «{source}»" + (f" · обновлено {local:%H:%M}" if edited else "") + "</i>"
     return Post(body=body, text=f"{head}\n\n{body}\n\n{foot}")
@@ -305,7 +392,7 @@ def keyboard() -> dict[str, Any] | None:
     return {"inline_keyboard": [[{"text": "Открыть в KORT", "url": link}]]}
 
 
-# ── Один пост на день ────────────────────────────────────────────────────────
+# ── Не дважды ────────────────────────────────────────────────────────────────
 
 
 def _ensure(workspace_id: uuid.UUID) -> None:
@@ -331,16 +418,43 @@ def _set(workspace_id: uuid.UUID, name: str, value: int) -> None:
         )
 
 
-def day_of(now: datetime) -> int:
+def slot_of(now: datetime) -> int | None:
+    """Напоминание, которое пора выложить, - `ГГГГММДДЧЧ` его часа; `None` - не время.
+
+    Часы - с `FINANCE_BILLS_HOUR` через `FINANCE_BILLS_EVERY` до `LAST_HOUR`:
+    10, 13, 16, 19. API, поднявшийся в 11:30, выкладывает напоминание 10:00
+    сразу, а не ждёт 13:00.
+    """
+    hour, every = finance_settings.bills_hour_value, finance_settings.bills_every_value
+    if hour is None or every is None:
+        return None
     local = now.astimezone(TZ)
-    return local.year * 10000 + local.month * 100 + local.day
+    if not hour <= local.hour < LAST_HOUR:
+        return None
+    at = hour + (local.hour - hour) // every * every
+    return (local.year * 10000 + local.month * 100 + local.day) * 100 + at
+
+
+def reminder_hours() -> list[int]:
+    """Часы напоминаний по Астане: [10, 13, 16, 19]; пусто - бот выключен неверной настройкой."""
+    hour, every = finance_settings.bills_hour_value, finance_settings.bills_every_value
+    if hour is None or every is None:
+        return []
+    return list(range(hour, LAST_HOUR, every))
+
+
+def slot_time(slot: int) -> datetime:
+    day, hour = divmod(slot, 100)
+    year, rest = divmod(day, 10000)
+    month, mday = divmod(rest, 100)
+    return datetime(year, month, mday, hour, tzinfo=TZ)
 
 
 def claim(workspace_id: uuid.UUID, day: int) -> int | None:
-    """Сводка дня - этому процессу. Вернёт прежний день или `None`, если её уже взяли.
+    """Напоминание этого часа - этому процессу. Вернёт прежний час или `None`, если его уже взяли.
 
     `UPDATE … WHERE value < day` под блокировкой строки: второй процесс дождётся
-    первого и увидит, что день уже не меньше, - и ничего не выложит.
+    первого и увидит, что час уже не меньше, - и ничего не выложит.
     """
     _ensure(workspace_id)
     with finance_session() as session:
@@ -356,20 +470,13 @@ def claim(workspace_id: uuid.UUID, day: int) -> int | None:
 
 
 def release(workspace_id: uuid.UUID, day: int, previous: int) -> None:
-    """Telegram не принял - день снова свободен, следующий проход повторит."""
+    """Telegram не принял - час снова свободен, следующий проход повторит."""
     with finance_session() as session:
         session.execute(
             sa.update(Counter)
             .where(Counter.workspace_id == workspace_id, Counter.name == DAY, Counter.value == day)
             .values(value=previous)
         )
-
-
-def due(now: datetime) -> bool:
-    """Пора выкладывать сводку: любой день недели, от часа сводки до вечера."""
-    hour = finance_settings.bills_hour_value
-    local = now.astimezone(TZ)
-    return hour is not None and hour <= local.hour < LAST_HOUR
 
 
 def target_workspace() -> uuid.UUID | None:
@@ -552,7 +659,8 @@ def notify_new(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board,
     Возвращает, о скольких счетах написано. Telegram не принял - эти счета
     снова «не сказаны», и следующий проход пишет о них заново.
     """
-    fresh = _unique(board.bills)
+    # Только окно: старый хвост «новым» не бывает - о нём строка в напоминании.
+    fresh = [bill for bill in _unique(board.bills) if in_window(bill, now)]
     if not fresh:
         return 0
     with finance_session() as session:
@@ -695,17 +803,42 @@ def refresh_notices(
 # ── Проход ───────────────────────────────────────────────────────────────────
 
 
-def _edit_digest(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now: datetime) -> str:
-    """Поправить сводку дня, если список изменился; выставлено всё - удалить её.
+@dataclass(frozen=True)
+class _Last:
+    """Прошлое напоминание - для строки «С 13:00: выставлено 3, добавилось 1»."""
 
-    `""` - сводки сегодня нет (или её уже удалили).
+    at: datetime
+    keys: frozenset[str]
+    note: str
+
+
+_last: dict[uuid.UUID, _Last] = {}
+_last_lock = threading.Lock()
+
+
+def _first_of_day(slot: int) -> bool:
+    return slot % 100 == finance_settings.bills_hour_value
+
+
+def _edit_reminder(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now: datetime) -> str:
+    """Поправить текущее напоминание, если список изменился; выставлено всё - удалить его.
+
+    `""` - напоминания нет (или его уже удалили).
     """
-    if _value(workspace_id, DAY) != day_of(now):
-        return ""
     post_id = _value(workspace_id, POST)
     if not post_id:
         return ""
-    post = render(board, now, edited=True)
+    slot = _value(workspace_id, DAY)
+    with _last_lock:
+        last = _last.get(workspace_id)
+    post = render(
+        board,
+        now,
+        at=slot_time(slot) if slot >= 10**9 else None,
+        edited=True,
+        note=last.note if last is not None else "",
+        tail_alone=slot >= 10**9 and _first_of_day(slot),
+    )
     if post is None:
         if _delete(api, chat, post_id):
             _set(workspace_id, POST, 0)
@@ -718,8 +851,40 @@ def _edit_digest(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Boar
     return "edited"
 
 
+def _post_reminder(
+    api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now: datetime, slot: int, previous: int
+) -> str:
+    """Новое напоминание - и прошлое прочь: в канале одно актуальное."""
+    old = _value(workspace_id, POST)
+    with _last_lock:
+        last = _last.get(workspace_id)
+    note = since_line(last.keys, last.at, board, now) if last is not None else ""
+    at = slot_time(slot)
+    post = render(board, now, at=at, note=note, tail_alone=_first_of_day(slot))
+    result = "empty"
+    if post is None:
+        _set(workspace_id, POST, 0)
+    else:
+        try:
+            message_id = _send(api, chat, post.text)
+        except TelegramError:
+            release(workspace_id, slot, previous)
+            raise
+        _set(workspace_id, POST, message_id)
+        _set(workspace_id, HASH, post.digest)
+        overdue, soon, _ = split(board, now)
+        with _last_lock:
+            _last[workspace_id] = _Last(at=at, keys=frozenset(bill.key for bill in overdue + soon), note=note)
+        result = "posted"
+    if old:
+        _delete(api, chat, old)  # старше 48 часов не удалится - пусть висит, новое всё равно ниже
+    # Названное напоминанием отдельным сообщением «новое» не повторяется.
+    remember(workspace_id, board)
+    return result
+
+
 def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
-    """Один проход: сводка дня, если пора; новое - сообщением; правка своих сообщений.
+    """Один проход: напоминание, если пора; новое - сообщением; правка своих сообщений.
 
     Возвращает сделанное через «+» (`posted+notices-edited`), `wait` - ничего;
     `no-workspace` / `no-board` - читать нечего.
@@ -735,25 +900,11 @@ def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
         return "no-board"
     _ensure(workspace_id)
     done: list[str] = []
-    day = day_of(now)
-    if due(now):
-        previous = claim(workspace_id, day)
+    slot = slot_of(now)
+    if slot is not None:
+        previous = claim(workspace_id, slot)
         if previous is not None:
-            post = render(board, now)
-            if post is None:
-                _set(workspace_id, POST, 0)
-                done.append("empty")
-            else:
-                try:
-                    message_id = _send(api, chat, post.text)
-                except TelegramError:
-                    release(workspace_id, day, previous)
-                    raise
-                _set(workspace_id, POST, message_id)
-                _set(workspace_id, HASH, post.digest)
-                done.append("posted")
-            # Названное сводкой отдельным сообщением «новое» не повторяется.
-            remember(workspace_id, board)
+            done.append(_post_reminder(api, chat, workspace_id, board, now, slot, previous))
     if not _value(workspace_id, SEEDED):
         remember(workspace_id, board)
         done.append("seeded")
@@ -765,7 +916,7 @@ def tick(api: Bot, chat: str, now: datetime | None = None) -> str:
     if deleted:
         done.append("notices-deleted")
     if "posted" not in done and "empty" not in done:
-        edited = _edit_digest(api, chat, workspace_id, board, now)
+        edited = _edit_reminder(api, chat, workspace_id, board, now)
         if edited:
             done.append(edited)
     return "+".join(done) or "wait"
@@ -816,7 +967,7 @@ def channel_out(workspace_id: uuid.UUID) -> dict[str, Any] | None:
     chat = _clean(finance_settings.bills_chat_id)
     if not url and chat.startswith("@"):
         url = f"https://t.me/{chat[1:]}"
-    return {"title": title or chat, "url": url, "hour": finance_settings.bills_hour_value}
+    return {"title": title or chat, "url": url, "hours": reminder_hours()}
 
 
 # ── Фоновый цикл ─────────────────────────────────────────────────────────────
@@ -853,7 +1004,7 @@ __all__ = [
     "channel_out",
     "claim",
     "contracts",
-    "due",
+    "in_window",
     "months_text",
     "notice_text",
     "notify_new",
@@ -862,6 +1013,9 @@ __all__ = [
     "remember",
     "render",
     "run_forever",
+    "since_line",
+    "slot_of",
+    "split",
     "target_workspace",
     "tick",
 ]
