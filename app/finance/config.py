@@ -20,6 +20,15 @@
                                 (REST-сервис 1С). Пусто - базу 1С не подключить
     FINANCE_ONEC_SYNC_MINUTES - как часто перечитывать базы 1С (30); 0 -
                                 только кнопкой «Обновить»
+    FINANCE_BILLS_BOT_TOKEN   - токен бота «Не выставлены счета» (@BotFather)
+    FINANCE_BILLS_CHAT_ID     - канал, куда бот кладёт сводку (`@имя` или `-100…`).
+                                Без обоих список живёт только в «Счетах»
+    FINANCE_BILLS_WORKSPACE_ID - компания, чью книгу-сводку читает бот. Пусто -
+                                та единственная, у которой сводка подключена
+    FINANCE_BILLS_HOUR        - час сводки по Астане (UTC+5), будни (10)
+    FINANCE_APP_URL           - адрес KORT для кнопки «Открыть в KORT»
+                                (https://kort.cards). Пусто - первый https из
+                                ALLOWED_ORIGINS
 
 Про валюту компании
 ───────────────────
@@ -72,6 +81,11 @@ class FinanceSettings(BaseSettings):
     support_chat_id: str = Field(default="", validation_alias=AliasChoices("FINANCE_SUPPORT_CHAT_ID"))
     secrets_key: str = Field(default="", validation_alias=AliasChoices("FINANCE_SECRETS_KEY"))
     onec_sync_minutes: int = Field(default=30, ge=0, validation_alias=AliasChoices("FINANCE_ONEC_SYNC_MINUTES"))
+    bills_bot_token: str = Field(default="", validation_alias=AliasChoices("FINANCE_BILLS_BOT_TOKEN"))
+    bills_chat_id: str = Field(default="", validation_alias=AliasChoices("FINANCE_BILLS_CHAT_ID"))
+    bills_workspace_id: str = Field(default="", validation_alias=AliasChoices("FINANCE_BILLS_WORKSPACE_ID"))
+    bills_hour: int = Field(default=10, ge=0, le=23, validation_alias=AliasChoices("FINANCE_BILLS_HOUR"))
+    app_url: str = Field(default="", validation_alias=AliasChoices("FINANCE_APP_URL"))
 
     @property
     def support_ready(self) -> bool:
@@ -82,6 +96,15 @@ class FinanceSettings(BaseSettings):
         поддержки ушла бы в чужую базу.
         """
         return bool(self.support_bot_token.strip().strip('"') and self.support_chat_id.strip().strip('"'))
+
+    @property
+    def bills_ready(self) -> bool:
+        """Бот «Не выставлены счета» настроен.
+
+        Токен - тоже только у одного API: «сводка за сегодня уже ушла» помнит
+        база, и локальный стенд со своей базой выложил бы в канал вторую.
+        """
+        return bool(self.bills_bot_token.strip().strip('"') and self.bills_chat_id.strip().strip('"'))
 
     @property
     def import_max_bytes(self) -> int:

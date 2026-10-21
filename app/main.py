@@ -149,6 +149,7 @@ async def lifespan(_: FastAPI):
     contracts_task: asyncio.Task | None = None
     support_task: asyncio.Task | None = None
     onec_task: asyncio.Task | None = None
+    bills_task: asyncio.Task | None = None
     try:
         from app.finance.config import finance_settings
 
@@ -162,6 +163,11 @@ async def lifespan(_: FastAPI):
             from app.finance import support_bot
 
             support_task = asyncio.create_task(support_bot.run_forever())
+        # Бот «Не выставлены счета»: сводка дня по книге-сводке - в канал.
+        if finance_settings.enabled and finance_settings.bills_ready:
+            from app.finance import bills_bot
+
+            bills_task = asyncio.create_task(bills_bot.run_forever())
     except Exception as exc:  # noqa: BLE001
         log.warning("finance: фоновая задача не запустилась: %s", exc)
 
@@ -169,7 +175,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        for task in (contracts_task, support_task, onec_task):
+        for task in (contracts_task, support_task, onec_task, bills_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
