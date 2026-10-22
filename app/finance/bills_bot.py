@@ -39,8 +39,10 @@
   выходит заново. Чаще раза в `NEW_GAP` не выходит, а правится: книгу
   заполняют строка за строкой, и каждая звенела бы.
 * **Кнопка «Прислать сейчас»** - в закреплённом сообщении канала и под каждым
-  постом: бот перечитывает книгу и присылает оба поста тут же, без звука.
-  `/bind` в канале ставит закреплённое сообщение заново.
+  постом: бот перечитывает книгу и, если что-то изменилось, присылает посты
+  заново, без звука; итог («Новых счетов нет…») он кладёт в канал и через
+  5 секунд убирает - иначе кнопка выглядела сломанной. `/bind` в канале
+  ставит закреплённое сообщение заново.
 * Между ними бот **правит текущие посты**: счёт отметили (в книге или в
   KORT) - строка уходит; выставлено всё - пост удаляется.
 
@@ -101,8 +103,11 @@ TICK = 60
 NEW_GAP = 600.0
 #: Кнопка «Прислать сейчас» чаще этого не присылает.
 PULL_GAP = 30.0
-#: Сколько ждать книгу по кнопке: ответа на кнопку Telegram ждёт недолго.
-PULL_WAIT = 8.0
+#: Сколько ждать книгу по кнопке. Нажавшему уже ответили «Проверяю книгу…»,
+#: так что ждать можно и холодное чтение (на свежем запуске - до 15 с).
+PULL_WAIT = 25.0
+#: Сколько висит в канале итог нажатия - прочитать и не засорять канал.
+NOTE_SECONDS = 5.0
 #: Как часто перечитывать сведения о канале (название, ссылка) для «Счетов».
 CHANNEL_TTL = 3600.0
 #: Запись «счёт был в посте» старше этого стирается: такой счёт давно вне окна.
@@ -932,35 +937,56 @@ def _tick(api: Bot, chat: str, workspace_id: uuid.UUID, board: bills.Board, now:
     return "+".join(done) or "wait"
 
 
-def pull(api: Bot, chat: str, now: datetime | None = None) -> str:
-    """Кнопка «Прислать сейчас»: книга перечитывается, оба поста выходят тут же, без звука.
+def _counts(board: bills.Board, now: datetime) -> str:
+    """«абонентская плата - 11 счетов, аренда - 32 счёта»: сколько счетов в каждом посте."""
+    return ", ".join(f"{TITLES[kind].lower()} - {_bills(len(plan(board, now, kind).due))}" for kind in KINDS)
 
-    Возвращает ответ на кнопку - Telegram покажет его нажавшему.
+
+def pull(api: Bot, chat: str, now: datetime | None = None) -> str:
+    """Кнопка «Прислать сейчас»: книга перечитывается; изменилось - посты выходят заново, без звука.
+
+    Пост, который и так совпадает с книгой, не перевыкладывается: в канале он
+    и без того последний. Возвращает итог словами - его бот на миг кладёт в
+    канал (`_on_button`), чтобы кнопка не молчала.
     """
     now = now or _now()
     workspace_id = target_workspace()
     if workspace_id is None:
-        return "Книга-сводка не подключена в KORT"
-    recent = "Списки только что отправлены - они внизу канала"
+        return "Книга-сводка не подключена в KORT."
+    recent = "Списки только что обновлены - они выше."
     with _work:
         if time.monotonic() - _pulled.get(workspace_id, -PULL_GAP) < PULL_GAP:
             return recent
     with finance_session() as session:
         board, _ = bills.current(session, workspace_id, wait=PULL_WAIT, force=True)
     if board is None:
-        return "Книга не прочиталась - попробуйте через минуту"
+        return "Книга не прочиталась - попробуйте через минуту."
     _ensure(workspace_id)
     with _work:
         if time.monotonic() - _pulled.get(workspace_id, -PULL_GAP) < PULL_GAP:
             return recent
-        results = [
-            _publish(api, chat, workspace_id, board, now, kind, at=now, silent=True, extras_alone=True)
-            for kind in KINDS
-        ]
+        results: list[str] = []
+        for kind in KINDS:
+            post_id = _value(workspace_id, POSTS[kind])
+            with _last_lock:
+                last = _last.get((workspace_id, kind))
+            post = render(board, now, kind, note=last.note if last is not None else "", extras_alone=True)
+            # Совпадает с книгой и на месте (правка «не изменилось» - значит, есть) - не трогаем.
+            if (
+                post is not None
+                and post_id
+                and post.digest == _value(workspace_id, HASHES[kind])
+                and _edit(api, chat, post_id, post.text)
+            ):
+                results.append("same")
+                continue
+            results.append(_publish(api, chat, workspace_id, board, now, kind, at=now, silent=True, extras_alone=True))
         _pulled[workspace_id] = time.monotonic()
     if all(result == "empty" for result in results):
-        return "На сегодня все счета выставлены"
-    return "Готово - списки внизу канала"
+        return "На сегодня все счета выставлены."
+    if all(result in ("same", "empty") for result in results):
+        return f"Новых счетов нет, списки выше актуальны: {_counts(board, now)}."
+    return f"Списки обновлены: {_counts(board, now)}."
 
 
 # ── Кнопка в канале ──────────────────────────────────────────────────────────
@@ -1026,12 +1052,59 @@ def _same_chat(where: dict[str, Any], chat: str) -> bool:
     return bool(username) and chat.lower() == f"@{username}".lower()
 
 
+def _later(seconds: float, action: Any) -> None:
+    """Сделать через `seconds` секунд, не держа поток. Тесты подменяют - делают сразу."""
+    timer = threading.Timer(seconds, action)
+    timer.daemon = True
+    timer.start()
+
+
+def note(api: Bot, chat: str, text: str) -> None:
+    """Короткое сообщение в канал без звука - и удалить его через `NOTE_SECONDS`.
+
+    Ответ на кнопку: всплывающую надпись Telegram видит только нажавший, и
+    человек в канале оставался с ощущением, что кнопка сломана (22.10.2026).
+    """
+    try:
+        sent = api.call(
+            "sendMessage",
+            {"chat_id": chat, "text": text, "disable_notification": True, "link_preview_options": {"is_disabled": True}},
+        )
+    except TelegramError as exc:
+        log.warning("счета: ответ на кнопку в канал не ушёл (%s)", exc)
+        return
+    message_id = int(sent["message_id"])
+
+    def drop() -> None:
+        try:
+            _delete(api, chat, message_id)
+        except TelegramError as exc:
+            log.info("счета: ответ на кнопку не удалился (%s)", exc)
+
+    _later(NOTE_SECONDS, drop)
+
+
+def _stale(exc: TelegramError) -> bool:
+    """Telegram отказал отвечать на нажатие: оно старое (бот не слышал его вовремя)."""
+    reason = str(exc).lower()
+    return exc.refused and ("too old" in reason or "query id is invalid" in reason)
+
+
 def _on_button(api: Bot, chat: str, query: dict[str, Any]) -> None:
-    def answer(text: str = "") -> None:
+    """«Прислать сейчас»: сразу «Проверяю книгу…» нажавшему, итог - на миг в канале.
+
+    Нажатие, на которое Telegram уже не даёт ответить, - старое: его сделали,
+    пока бот не слышал канал. Такое не отрабатывается - иначе бот, вернувшись,
+    вывалил бы в канал посты на давние нажатия.
+    """
+
+    def answer(text: str = "") -> bool:
         try:
             api.call("answerCallbackQuery", {"callback_query_id": query.get("id"), "text": text or None})
         except TelegramError as exc:
             log.info("счета: ответ на кнопку не ушёл (%s)", exc)
+            return not _stale(exc)
+        return True
 
     if query.get("data") != PULL:
         answer()
@@ -1039,12 +1112,15 @@ def _on_button(api: Bot, chat: str, query: dict[str, Any]) -> None:
     if not _same_chat((query.get("message") or {}).get("chat") or {}, chat):
         answer("Кнопка работает только в канале счетов")
         return
+    if not answer("Проверяю книгу…"):
+        log.info("счета: старое нажатие «Прислать сейчас» - не отрабатываю")
+        return
     try:
         text = pull(api, chat)
     except TelegramError as exc:
         log.warning("счета: пост по кнопке не ушёл (%s)", exc)
-        text = "Telegram не принял пост - попробуйте через минуту"
-    answer(text)
+        text = "Telegram не принял пост - попробуйте через минуту."
+    note(api, chat, text)
 
 
 def _on_channel_post(api: Bot, chat: str, post: dict[str, Any]) -> None:

@@ -15,7 +15,8 @@ Google и Telegram подменены: проверяется разбор кн�
   отказ Telegram освобождает час, отметка правит пост, всё выставлено - пост
   удалён;
 * новое - сразу и со звуком, в пост своего вида, но не чаще `NEW_GAP`;
-  кнопка «Прислать сейчас» - оба поста без звука и не чаще `PULL_GAP`;
+  кнопка «Прислать сейчас» - изменившиеся посты без звука и не чаще `PULL_GAP`,
+  итог на 5 секунд в канале, старые нажатия не отрабатываются;
   `/bind` ставит кнопку заново;
 * переход с одного поста на два правит висящий пост и выкладывает пост аренды
   без звука, а не выдаёт весь список новым;
@@ -707,27 +708,57 @@ def test_pervyy_zapusk_posle_soobshcheniy_novoe(app: FastAPI, book) -> None:
 # ── Кнопка «Прислать сейчас» и /bind ─────────────────────────────────────────
 
 
+COUNTS = "абонентская плата - 2 счёта, аренда - 3 счёта"
+
+
 def test_knopka_prislat_seychas(app: FastAPI, book, monkeypatch) -> None:
     owner = register(app)
     connect(owner)
     api = FakeBot()
-    assert bills_bot.pull(api, CHAT, NOW) == "Готово - списки внизу канала"
+    assert bills_bot.pull(api, CHAT, NOW) == f"Списки обновлены: {COUNTS}."
     abon, rent_post = api.sent("sendMessage")
     assert abon["text"] == ABON_POST and rent_post["text"] == RENT_POST
     assert abon["disable_notification"] is True and rent_post["disable_notification"] is True, "по кнопке - без звука"
-    assert bills_bot.pull(api, CHAT, NOW) == "Списки только что отправлены - они внизу канала"
+    assert bills_bot.pull(api, CHAT, NOW) == "Списки только что обновлены - они выше."
     assert len(api.sent("sendMessage")) == 2
 
+    # Книга не менялась - посты не перевыкладываются, только проверяется, что они на месте.
     monkeypatch.setattr(bills_bot, "PULL_GAP", 0.0)
-    assert bills_bot.pull(api, CHAT, NOW + timedelta(minutes=1)) == "Готово - списки внизу канала"
-    assert [item["message_id"] for item in api.sent("deleteMessage")] == [101, 102], "прошлые посты - прочь"
+    assert bills_bot.pull(api, CHAT, NOW + timedelta(minutes=1)) == f"Новых счетов нет, списки выше актуальны: {COUNTS}."
+    assert len(api.sent("sendMessage")) == 2 and api.sent("deleteMessage") == []
+    assert [item["message_id"] for item in api.sent("editMessageText")] == [101, 102]
+
+    # Пост удалили из канала руками - кнопка выкладывает его заново.
+    api.refuse["editMessageText"] = TelegramError("Bad Request: message to edit not found", code=400)
+    assert bills_bot.pull(api, CHAT, NOW + timedelta(minutes=1)) == f"Списки обновлены: {COUNTS}."
+    assert [item["text"] for item in api.sent("sendMessage")[2:]] == [ABON_POST, RENT_POST]
+    assert [item["message_id"] for item in api.sent("deleteMessage")] == [101, 102]
+    del api.refuse["editMessageText"]
+
     # Пост по кнопке не делает час: в 10:00 выйдет свой.
     assert bills_bot.tick(api, CHAT, NOW + timedelta(minutes=2)) == BOTH_POSTED
 
     issue_all(book["values"])
     fresh()
-    assert bills_bot.pull(api, CHAT, NOW + timedelta(minutes=3)) == "На сегодня все счета выставлены"
+    assert bills_bot.pull(api, CHAT, NOW + timedelta(minutes=3)) == "На сегодня все счета выставлены."
     assert [item["message_id"] for item in api.sent("deleteMessage")][-2:] == [105, 106]
+
+
+def test_knopka_posle_pravki_knigi(app: FastAPI, book, monkeypatch) -> None:
+    """Книга изменилась с прошлого поста - кнопка выкладывает списки заново."""
+    owner = register(app)
+    connect(owner)
+    monkeypatch.setattr(bills_bot, "PULL_GAP", 0.0)
+    api = FakeBot()
+    bills_bot.pull(api, CHAT, NOW)
+    line = next(line for line in book["values"][1:] if "№RENT/93" in line and "04.10.2026" in line)
+    line[BILL] = "TRUE"
+    fresh()
+    assert bills_bot.pull(api, CHAT, NOW + timedelta(minutes=1)) == (
+        "Списки обновлены: абонентская плата - 2 счёта, аренда - 2 счёта."
+    )
+    assert api.sent("sendMessage")[-1]["text"].startswith("<b>Аренда")
+    assert [item["message_id"] for item in api.sent("deleteMessage")] == [102], "пост аренды заменён, абонентская - на месте"
 
 
 def press(data: str = "bills:now", chat: dict | None = None) -> dict:
@@ -736,19 +767,55 @@ def press(data: str = "bills:now", chat: dict | None = None) -> dict:
 
 
 def test_knopka_cherez_telegram(app: FastAPI, book, monkeypatch) -> None:
+    """Нажавшему - «Проверяю книгу…» сразу; итог - сообщением в канале, которое само уходит."""
     owner = register(app)
     connect(owner)
     monkeypatch.setattr(bills_bot, "_now", lambda: NOW)
+    later: list[tuple[float, object]] = []
+    monkeypatch.setattr(bills_bot, "_later", lambda seconds, action: later.append((seconds, action)))
     api = FakeBot()
     bills_bot.handle(api, CHAT, press())
-    assert api.sent("answerCallbackQuery") == [{"callback_query_id": "q1", "text": "Готово - списки внизу канала"}]
-    assert [item["text"] for item in api.sent("sendMessage")] == [ABON_POST, RENT_POST]
+    assert api.sent("answerCallbackQuery") == [{"callback_query_id": "q1", "text": "Проверяю книгу…"}]
+    abon, rent_post, note = api.sent("sendMessage")
+    assert [abon["text"], rent_post["text"]] == [ABON_POST, RENT_POST]
+    assert note["text"] == f"Списки обновлены: {COUNTS}."
+    assert note["disable_notification"] is True and "reply_markup" not in note, "итог - без звука и без кнопки"
+    [(seconds, drop)] = later
+    assert seconds == bills_bot.NOTE_SECONDS == 5.0
+    assert api.sent("deleteMessage") == []
+    drop()
+    assert api.sent("deleteMessage") == [{"chat_id": CHAT, "message_id": 103}], "итог прочитан - и ушёл"
+
+    # Повторное нажатие в те же 30 секунд - тоже не молчит.
+    bills_bot.handle(api, CHAT, press())
+    assert api.sent("sendMessage")[-1]["text"] == "Списки только что обновлены - они выше."
+    assert len(later) == 2
 
     bills_bot.handle(api, CHAT, press(chat={"id": -100777, "type": "supergroup"}))
     assert api.sent("answerCallbackQuery")[-1]["text"] == "Кнопка работает только в канале счетов"
     bills_bot.handle(api, CHAT, press("другое"))
     assert api.sent("answerCallbackQuery")[-1]["text"] is None
-    assert len(api.sent("sendMessage")) == 2
+    assert len(api.sent("sendMessage")) == 4
+
+
+def test_staroe_nazhatie_ne_otrabatyvaetsya(app: FastAPI, book, monkeypatch) -> None:
+    """Нажатие, сделанное, пока бот не слышал канал: Telegram не даёт на него ответить - постов нет."""
+    owner = register(app)
+    connect(owner)
+    monkeypatch.setattr(bills_bot, "_now", lambda: NOW)
+    monkeypatch.setattr(bills_bot, "_later", lambda seconds, action: action())
+    api = FakeBot()
+    api.refuse["answerCallbackQuery"] = TelegramError(
+        "Bad Request: query is too old and response timeout expired or query ID is invalid", code=400
+    )
+    bills_bot.handle(api, CHAT, press())
+    assert api.calls == []
+
+    # Ответ не ушёл по сети - нажатие свежее, отрабатывается.
+    api.refuse["answerCallbackQuery"] = TelegramError("нет связи с Telegram (ConnectionError)")
+    bills_bot.handle(api, CHAT, press())
+    assert len(api.sent("sendMessage")) == 3
+    assert api.sent("deleteMessage") == [{"chat_id": CHAT, "message_id": 103}]
 
 
 def test_bind_stavit_knopku(app: FastAPI, book) -> None:
