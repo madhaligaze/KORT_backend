@@ -985,11 +985,21 @@ def test_shablon_scheta_razdela(app: FastAPI, book, books, monkeypatch) -> None:
     assert customers == [
         "ТОО KENESARY AGRO", "ИП АЙЯ", "ТОО Find Dream", "ТОО Custom Trade", "ТОО Молфуд", "ADK Home", "ИП ЖАЛМҰХАН",
     ]
-    assert all(sheet[f"N{n}"].value is None for n in range(2, sheet.max_row + 1))
-    rows = {sheet[f"D{n}"].value: n for n in range(2, sheet.max_row + 1)}
-    sheet[f"N{rows['ТОО KENESARY AGRO']}"], sheet[f"O{rows['ТОО KENESARY AGRO']}"] = 312, datetime(2026, 10, 22)
-    sheet[f"N{rows['ТОО Custom Trade']}"], sheet[f"O{rows['ТОО Custom Trade']}"] = "А-17", "22.10.2026"
-    sheet[f"N{rows['ИП АЙЯ']}"] = 313  # без даты - отказ этой строке
+    assert workbook.sheetnames == ["Счета", "Аренда", "Абонентская плата", "BBC", "BBC Omar", "BBCL", "BBCS"]
+    assert [workbook["Аренда"][f"D{n}"].value for n in range(2, workbook["Аренда"].max_row + 1)] == [
+        "ТОО Find Dream", "ТОО Custom Trade", "ТОО Молфуд", "ИП ЖАЛМҰХАН",
+    ]
+    assert all(str(sheet[f"N{n}"].value).startswith("=IFERROR(") for n in range(2, sheet.max_row + 1)), "общий реестр тянет"
+
+    # Финансист вписывает на листе своего юрлица.
+    def put(title: str, customer: str, number: object, issued: object) -> None:
+        firm = workbook[title]
+        line = next(n for n in range(2, firm.max_row + 1) if firm[f"D{n}"].value == customer)
+        firm[f"N{line}"], firm[f"O{line}"] = number, issued
+
+    put("BBCL", "ТОО KENESARY AGRO", 312, datetime(2026, 10, 22))
+    put("BBC Omar", "ТОО Custom Trade", "А-17", "22.10.2026")
+    put("BBCS", "ИП АЙЯ", 313, None)  # без даты - отказ этой строке
     out = io.BytesIO()
     workbook.save(out)
     filled = out.getvalue()

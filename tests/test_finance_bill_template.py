@@ -76,8 +76,12 @@ def statuses(result: dict) -> list[tuple[str, str]]:
     return [(row["customer"], row["status"]) for row in result["rows"]]
 
 
+def kind(bill: Bill) -> str:
+    return bill_template.RENT_SHEET if bill.department == "Аренда" else bill_template.ABON_SHEET
+
+
 def test_shablon_kak_u_finansistov() -> None:
-    sheet = workbook(bill_template.build([AYA, RAJA, KENESARY])).active
+    sheet = workbook(bill_template.build([AYA, RAJA, KENESARY], kind_of=kind)).active
     assert sheet.title == "Счета"
     heads = {cell.column_letter: cell.value for cell in sheet[1] if cell.value}
     assert heads == {
@@ -90,18 +94,133 @@ def test_shablon_kak_u_finansistov() -> None:
     assert row["F"] == "№НО/39" and row["L"] == 91000
     assert row["G"].date() == date(2026, 1, 20) and row["I"].date() == date(2026, 10, 20)
     assert row["J"].date() == date(2026, 11, 19)
-    assert "N" not in row and "O" not in row, "номер и дату заполняет человек"
     assert [sheet[f"D{n}"].value for n in (2, 3, 4)] == ["ИП АЙЯ", "ИП РАЖА", "ТОО KENESARY AGRO"], "строка на счёт, по порядку"
     assert [sheet[f"Q{n}"].value for n in (2, 3, 4)] == [AYA.id, RAJA.id, KENESARY.id]
     assert sheet.column_dimensions["Q"].hidden, "код счёта - в скрытой колонке"
     assert sheet["E4"].value is None, "«По 1C» пусто - пусто, а не «None»"
-    for address in ("N1", "O1", "N4", "O4"):
-        assert sheet[address].fill.fgColor.rgb == "FFFFF2CC", f"{address}: жёлтое, не прозрачное"
-    assert sheet["O3"].number_format == "DD.MM.YYYY" and sheet["L2"].number_format == "#,##0"
-    [rule] = sheet.data_validations.dataValidation
-    assert str(rule.sqref) == "O2:O4", "дата проверяется у каждой строки"
+    for address in ("G2", "I2", "J2", "O3"):
+        # Строчными: «DD.MM.YYYY» просмотр Apple показывал «296.10.2026» (23.10.2026, айфон).
+        assert sheet[address].number_format == "dd.mm.yyyy", address
+    assert sheet["L2"].number_format == "#,##0"
     assert sheet.freeze_panes == "A2"
     assert bill_template.filename(date(2026, 10, 22)) == "Счета к выставлению 22.10.2026.xlsx"
+
+
+def test_listy_obshchiy_reestr_vid_i_yurlica() -> None:
+    """«Счета» → «Аренда» → «Абонентская плата» → лист на юрлицо; вписывают на листе юрлица."""
+    rent = dataclasses.replace(AYA, line=20, own="BBC Omar", customer="ТОО Молфуд", number="№RENT/93", department="Аренда")
+    odd = dataclasses.replace(AYA, line=21, own="Фирма: «А/Б»?", customer="ИП Странный", number="№1")
+    book = workbook(bill_template.build([AYA, KENESARY, rent, RAJA, odd], kind_of=kind))
+    assert book.sheetnames == ["Счета", "Аренда", "Абонентская плата", "BBC Omar", "BBCL", "BBCS", "Фирма- «А-Б»-"]
+    assert book.calculation.fullCalcOnLoad, "формулы считаются при открытии"
+
+    def customers(title: str) -> list[str]:
+        sheet = book[title]
+        return [sheet[f"D{n}"].value for n in range(2, sheet.max_row + 1)]
+
+    assert customers("Счета") == ["ИП АЙЯ", "ТОО KENESARY AGRO", "ТОО Молфуд", "ИП РАЖА", "ИП Странный"]
+    assert customers("Аренда") == ["ТОО Молфуд"]
+    assert customers("Абонентская плата") == ["ИП АЙЯ", "ТОО KENESARY AGRO", "ИП РАЖА", "ИП Странный"]
+    assert customers("BBCS") == ["ИП АЙЯ", "ИП РАЖА"] and customers("BBCL") == ["ТОО KENESARY AGRO"]
+
+    # Лист юрлица - где вписывают: жёлтое, пустое, с проверкой даты.
+    firm = book["BBCS"]
+    assert firm["N2"].value is None and firm["O3"].value is None
+    for address in ("N1", "O1", "N2", "O3"):
+        assert firm[address].fill.fgColor.rgb == "FFFFF2CC", f"{address}: жёлтое, не прозрачное"
+    [rule] = firm.data_validations.dataValidation
+    assert str(rule.sqref) == "O2:O3", "дата проверяется у каждой строки"
+    assert firm["Q2"].value == AYA.id and firm.column_dimensions["Q"].hidden
+
+    # Общие листы тянут № и дату по коду счёта, а не по адресу клетки.
+    summary = book["Счета"]
+    assert summary["N2"].value == (
+        "=IFERROR(IF(INDEX('BBCS'!$N$2:$N$2001,MATCH($Q2,'BBCS'!$Q$2:$Q$2001,0))=\"\",\"\","
+        "INDEX('BBCS'!$N$2:$N$2001,MATCH($Q2,'BBCS'!$Q$2:$Q$2001,0))),\"\")"
+    )
+    assert "'BBC Omar'!$O$2:$O$2001" in summary["O4"].value and "$Q4" in summary["O4"].value
+    assert "'Фирма- «А-Б»-'!" in summary["N6"].value
+    assert summary["N1"].fill.fgColor.rgb != "FFFFF2CC" and summary["N1"].comment is not None, "здесь не вписывают"
+    assert "'BBC Omar'!" in book["Аренда"]["N2"].value
+    [rule] = summary.data_validations.dataValidation
+    assert str(rule.sqref) == "O2:O6", "впишут дату прямо в общий реестр - тоже проверится"
+    assert book["Аренда"].max_row == 2
+
+
+def test_pustoy_vid_list_s_odnoy_shapkoy() -> None:
+    book = workbook(bill_template.build([AYA], kind_of=kind))
+    assert book.sheetnames == ["Счета", "Аренда", "Абонентская плата", "BBCS"]
+    assert book["Аренда"].max_row == 1 and book["Аренда"]["N1"].value == "№ \nСчета"
+
+
+def fill_sheet(data: bytes, title: str, cells: dict[str, object]) -> bytes:
+    book = workbook(data)
+    for address, value in cells.items():
+        book[title][address].value = value
+    return saved(book)
+
+
+def test_zapolneno_na_liste_yurlica_odna_zapis() -> None:
+    """Вписали на листе юрлица - одна строка с его адресом; общий лист с теми же значениями (Excel пересчитал) - не дубль."""
+    template = bill_template.build([AYA, RAJA, KENESARY], kind_of=kind)
+    on_firm = fill_sheet(template, "BBCS", {"N2": 312, "O2": datetime(2026, 10, 22)})
+    result = bill_template.parse(on_firm, board())
+    assert statuses(result) == [("ИП АЙЯ", "ready"), ("ИП РАЖА", "empty"), ("ТОО KENESARY AGRO", "empty")]
+    aya = result["rows"][0]
+    assert (aya["sheet"], aya["row"], aya["values"]) == ("BBCS", 2, {"bill_no": "312", "bill_date": "2026-10-22"})
+    assert result["counts"] == {"ready": 1, "same": 0, "empty": 2, "error": 0}, "счёт с трёх листов - один"
+
+    # Как после пересчёта Excel: общие листы показывают то же самое - всё равно одна запись.
+    recalculated = workbook(on_firm)
+    for title, row in (("Счета", 2), ("Абонентская плата", 2)):
+        recalculated[title][f"N{row}"].value = 312
+        recalculated[title][f"O{row}"].value = datetime(2026, 10, 22)
+    result = bill_template.parse(saved(recalculated), board())
+    assert statuses(result)[0] == ("ИП АЙЯ", "ready") and result["rows"][0]["sheet"] == "BBCS"
+    assert result["counts"]["ready"] == 1
+
+    # Вписали прямо в общий реестр, лист юрлица пуст - тоже принимается.
+    on_summary = fill_sheet(template, "Счета", {"N4": "248/1", "O4": "22.10.2026"})
+    result = bill_template.parse(on_summary, board())
+    kenesary = next(row for row in result["rows"] if row["customer"] == "ТОО KENESARY AGRO")
+    assert (kenesary["status"], kenesary["sheet"], kenesary["values"]["bill_no"]) == ("ready", "Счета", "248/1")
+
+
+def test_raznoe_na_listah_otkaz() -> None:
+    template = bill_template.build([AYA, RAJA], kind_of=kind)
+    book = workbook(fill_sheet(template, "BBCS", {"N2": 312, "O2": datetime(2026, 10, 22)}))
+    book["Счета"]["N2"].value = 313  # на общем листе вписали поверх формулы другое
+    book["Счета"]["O2"].value = datetime(2026, 10, 22)
+    result = bill_template.parse(saved(book), board())
+    aya = result["rows"][0]
+    assert aya["status"] == "error" and aya["values"] == {}
+    assert aya["problem"] == (
+        "На листах «Счета» строка 2, «BBCS» строка 2 у этого счёта вписано разное - какой номер и дата верные, KORT не угадывает"
+    )
+    assert result["counts"] == {"ready": 0, "same": 0, "empty": 1, "error": 1}
+
+
+def test_sortirovka_lista_yurlica() -> None:
+    """Лист юрлица отсортировали со скрытым кодом - всё на месте; без кода - строки не совпали с кодами, отказ."""
+    template = bill_template.build([AYA, RAJA], kind_of=kind)
+    book = workbook(fill_sheet(template, "BBCS", {"N2": 312, "O2": datetime(2026, 10, 22)}))
+    firm = book["BBCS"]
+    rows = [[cell.value for cell in firm[n]] for n in (2, 3)]
+    for n, values in zip((2, 3), reversed(rows)):  # строки поменяли местами целиком, с кодом
+        for column, value in enumerate(values, start=1):
+            firm.cell(row=n, column=column).value = value
+    result = bill_template.parse(saved(book), board())
+    assert statuses(result) == [("ИП АЙЯ", "ready"), ("ИП РАЖА", "empty")]
+    assert (result["rows"][0]["sheet"], result["rows"][0]["row"]) == ("BBCS", 3)
+
+    book = workbook(fill_sheet(template, "BBCS", {"N2": 312, "O2": datetime(2026, 10, 22)}))
+    firm = book["BBCS"]
+    for column in "BCDEFGIJLNO":  # отсортировали видимые колонки, скрытый код остался на месте
+        firm[f"{column}2"].value, firm[f"{column}3"].value = firm[f"{column}3"].value, firm[f"{column}2"].value
+    result = bill_template.parse(saved(book), board())
+    raja = next(row for row in result["rows"] if row["status"] != "empty")
+    assert raja["status"] == "error" and "Строку правили" in raja["problem"]
+    assert result["counts"]["ready"] == 0, "номер не уходит чужому счёту"
 
 
 def test_zapolnennyy_shablon_v_stroki() -> None:
@@ -172,14 +291,14 @@ def test_ne_nashlas_i_neskolko_mesyatsev() -> None:
     assert "несколько месяцев - впишите «Период с»" in result["rows"][0]["problem"]
 
 
-def test_dvazhdy_v_fayle_otkaz_obeim() -> None:
+def test_dvazhdy_na_liste_otkaz() -> None:
     result = bill_template.parse(finance_template([THREE[1], THREE[0], THREE[1]]), board())
-    assert statuses(result) == [("ИП АЙЯ", "error"), ("ИП Кадыркулова Торгын Карашевна", "ready"), ("ИП АЙЯ", "error")]
-    assert "несколько раз (строки 2, 4)" in result["rows"][0]["problem"]
+    assert statuses(result) == [("ИП АЙЯ", "error"), ("ИП Кадыркулова Торгын Карашевна", "ready")]
+    assert "на листе «Лист1» несколько раз (строки 2, 4)" in result["rows"][0]["problem"]
     # Незаполненный двойник не мешает заполненному.
     blank_twin = [*THREE[1][:9], None, None]
     result = bill_template.parse(finance_template([THREE[1], blank_twin]), board())
-    assert statuses(result) == [("ИП АЙЯ", "ready"), ("ИП АЙЯ", "empty")]
+    assert statuses(result) == [("ИП АЙЯ", "ready")]
 
 
 def test_pravili_dogovor_v_shablone() -> None:
@@ -210,10 +329,10 @@ def test_uzhe_v_knige() -> None:
     """Выставленный счёт: тот же номер - «уже в книге»; другой - отказ, а не перезапись."""
     template = bill_template.build([AYA])
     same = bill_template.parse(filled(template, {"N2": 248, "O2": datetime(2026, 9, 21), "Q2": AYA_SEPTEMBER.id}), board())
-    [row] = same["rows"]
+    [row] = [row for row in same["rows"] if row["status"] != "empty"]
     assert (row["status"], row["note"], row["values"]) == ("same", "В книге уже № 248 от 21.09.2026", {})
     other = bill_template.parse(filled(template, {"N2": 300, "O2": datetime(2026, 9, 21), "Q2": AYA_SEPTEMBER.id}), board())
-    [row] = other["rows"]
+    [row] = [row for row in other["rows"] if row["status"] != "empty"]
     assert row["status"] == "error" and row["problem"].startswith("В книге уже № 248 от 21.09.2026 - KORT его не перезаписывает")
 
 

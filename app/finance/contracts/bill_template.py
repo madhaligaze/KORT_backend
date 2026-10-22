@@ -1,32 +1,44 @@
 """Шаблон счетов Excel: скачать в разделе «Счета», заполнить, загрузить обратно.
 
 Финансисты BBC выставляют счета по своему шаблону Excel («Шаблон Ексель.xlsx»,
-22.10.2026): одна строка - один счёт, несколько юрлиц в одном листе. Колонки
-и их порядок - как у них: «Наша Фирма», «Наш Сотрудник», «Заказчик», «По 1C»,
-«№ Договора», «Дата заключения Договора», «Период с/по», «Сумма Договора» - и
-жёлтые «№ Счета» и «Дата выстав. Счета», которые заполняет человек.
+22.10.2026): одна строка - один счёт. Колонки и их порядок - как у них: «Наша
+Фирма», «Наш Сотрудник», «Заказчик», «По 1C», «№ Договора», «Дата заключения
+Договора», «Период с/по», «Сумма Договора» - и жёлтые «№ Счета» и «Дата
+выстав. Счета», которые заполняет человек.
 
 В файл идут те же счета, что бот прислал в канал, в том же порядке
-(`bills_bot.listed`). Загруженный файл в книги сам не пишет: KORT разбирает
-его в строки, человек видит, что из него вышло, и каждую строку в книгу её
-юрлица записывает та же запись, что у карточки счёта (`POST /bills/{id}` →
-`bill_book.save`), со всеми её проверками.
+(`bills_bot.listed`). Листы (порядок задал владелец 23.10.2026):
+* «Счета» - общий реестр, все счета вперемешку;
+* «Аренда», «Абонентская плата» - те же счета по виду;
+* по листу на каждое юрлицо («Наша Фирма») - здесь счета и выставляют:
+  жёлтые клетки только тут.
+«№ Счета» и дату общие листы берут с листа юрлица формулой - по скрытому коду
+счёта, а не по адресу клетки: отсортированный лист юрлица не подсунет общему
+реестру чужой номер. Одно и то же дважды заполнять не нужно.
+
+Загруженный файл в книги сам не пишет: KORT разбирает его в строки, человек
+видит, что из него вышло, и каждую строку в книгу её юрлица записывает та же
+запись, что у карточки счёта (`POST /bills/{id}` → `bill_book.save`), со всеми
+её проверками.
 
 Разбор - по названиям колонок, а не по буквам: шаблон правят и вставляют в
 него колонки. Строка счёта узнаётся по скрытому «Код KORT», а в шаблоне
-финансистов без кода - по юрлицу, клиенту, № договора и «Периоду с». Не
-нашлась, нашлось две, один счёт в файле дважды - отказ этой строке словами, а
-не догадка; остальные строки файла от этого не страдают.
+финансистов без кода - по юрлицу, клиенту, № договора и «Периоду с». Счёт на
+нескольких листах - одна строка, если везде вписано одно и то же; разное - отказ
+этому счёту, а не выбор наугад. Не нашлась, нашлось две, дважды на одном листе -
+тоже отказ строке словами; остальные строки файла от этого не страдают.
 """
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -47,8 +59,17 @@ EPOCH = date(1899, 12, 30)
 #: Цвет - с непрозрачной альфой (FF…), как в файле финансистов: «FFF2CC»
 #: openpyxl пишет как 00FFF2CC, и LibreOffice показал бы клетку без заливки.
 FILL = PatternFill(fill_type="solid", fgColor="FFFFF2CC")
-DATE_FORMAT = "DD.MM.YYYY"
+#: Только строчными. «DD.MM.YYYY» Excel читает как дату, а просмотр Apple
+#: (айфон, 23.10.2026) - по правилам Unicode, где «D» - номер дня в году:
+#: 23.10.2026 показывался «296.10.2026», 23.02 - «54.02».
+DATE_FORMAT = "dd.mm.yyyy"
 SHEET_TITLE = "Счета"
+RENT_SHEET = "Аренда"
+ABON_SHEET = "Абонентская плата"
+#: Общие листы: «№ Счета» и дату на них тянет формула с листа юрлица.
+SUMMARY_SHEETS = frozenset({SHEET_TITLE, RENT_SHEET, ABON_SHEET})
+#: Ячейки, по которым формула общего листа ищет счёт на листе юрлица.
+LOOKUP_ROWS = 2000
 
 #: Колонки шаблона: буква, заголовок, ширина - как у финансистов; `field` -
 #: что из счёта туда кладётся.
@@ -113,11 +134,40 @@ def _cell_value(bill: Bill, name: str) -> Any:
     return getattr(bill, name) or None
 
 
-def build(items: Sequence[Bill]) -> bytes:
-    """Шаблон на несколько счетов: известное из книги-сводки вписано, жёлтое - заполнить."""
-    book = Workbook()
-    sheet = book.active
-    sheet.title = SHEET_TITLE
+def _quoted(title: str) -> str:
+    """Имя листа в формуле: «'BBC Omar'»."""
+    return "'" + title.replace("'", "''") + "'"
+
+
+def _pull(source: str, column: str, row: int) -> str:
+    """Формула общего листа: значение колонки с листа юрлица - по коду счёта, а не по адресу.
+
+    Пусто на листе юрлица - пусто и здесь (`INDEX` пустой клетки дал бы 0, а
+    в колонке даты - 00.01.1900); счёта там нет - тоже пусто, не #N/A.
+    """
+    sheet = _quoted(source)
+    last = LOOKUP_ROWS + 1
+    look = f"INDEX({sheet}!${column}$2:${column}${last},MATCH(${KORT_COLUMN}{row},{sheet}!${KORT_COLUMN}$2:${KORT_COLUMN}${last},0))"
+    return f'=IFERROR(IF({look}="","",{look}),"")'
+
+
+def _firm_titles(items: Sequence[Bill]) -> dict[str, str]:
+    """Юрлицо → имя его листа: по алфавиту, без знаков, которых не терпит Excel, не длиннее 31 и без повторов."""
+    used = {title.casefold() for title in SUMMARY_SHEETS}
+    out: dict[str, str] = {}
+    for own in sorted({bill.own for bill in items}, key=lambda name: (name.casefold(), name)):
+        base = re.sub(r"[\[\]:*?/\\]", "-", own).strip().strip("'")[:31].strip() or "Без юрлица"
+        title, number = base, 2
+        while title.casefold() in used:
+            suffix = f" ({number})"
+            title, number = base[: 31 - len(suffix)] + suffix, number + 1
+        used.add(title.casefold())
+        out[own] = title
+    return out
+
+
+def _fill(sheet: Any, items: Sequence[Bill], sources: dict[str, str] | None) -> None:
+    """Лист шаблона. `sources` - юрлицо → лист, откуда тянуть № и дату; `None` - их вписывают здесь."""
     bold = Font(bold=True)
     head = Alignment(wrap_text=True, vertical="center")
     for letter, title, width, _ in LAYOUT:
@@ -127,24 +177,32 @@ def build(items: Sequence[Bill]) -> bytes:
     for letter, width in GAPS.items():
         sheet.column_dimensions[letter].width = width
     sheet.row_dimensions[1].height = 32
-    sheet["N1"].fill = FILL
-    sheet["O1"].fill = FILL
+    if sources is None:
+        sheet["N1"].fill = FILL
+        sheet["O1"].fill = FILL
+    else:
+        for letter in ("N", "O"):
+            sheet[f"{letter}1"].comment = Comment("Заполняется само с листа юрлица - вписывайте там", "KORT")
     # Код счёта - в скрытой колонке: по нему KORT узнаёт свою строку, даже если
-    # название клиента в файле поправили.
+    # название клиента в файле поправили, а общий лист - строку на листе юрлица.
     sheet[f"{KORT_COLUMN}1"].value = KORT_TITLE
     sheet.column_dimensions[KORT_COLUMN].hidden = True
     last = 1
     for last, bill in enumerate(items, start=2):
+        sheet[f"{KORT_COLUMN}{last}"].value = bill.id
         for letter, _, _, name in LAYOUT:
             cell = sheet[f"{letter}{last}"]
-            cell.value = _cell_value(bill, name)
+            if name in ("bill_no", "bill_date"):
+                if sources is None:
+                    cell.fill = FILL
+                else:
+                    cell.value = _pull(sources[bill.own], letter, last)
+            else:
+                cell.value = _cell_value(bill, name)
             if name in ("signed_at", "period_from", "period_to", "bill_date"):
                 cell.number_format = DATE_FORMAT
             if name == "amount":
                 cell.number_format = "#,##0"
-            if name in ("bill_no", "bill_date"):
-                cell.fill = FILL
-        sheet[f"{KORT_COLUMN}{last}"].value = bill.id
     sheet.freeze_panes = "A2"
     if last > 1:
         rule = DataValidation(
@@ -157,6 +215,26 @@ def build(items: Sequence[Bill]) -> bytes:
         )
         rule.add(f"O2:O{last}")
         sheet.add_data_validation(rule)
+
+
+def build(items: Sequence[Bill], kind_of: Callable[[Bill], str | None] = lambda bill: None) -> bytes:
+    """Шаблон: «Счета», «Аренда», «Абонентская плата» и лист на каждое юрлицо.
+
+    `kind_of` - лист вида счёта (`RENT_SHEET`, `ABON_SHEET`) или `None`: «без
+    вида услуги» есть только в общем реестре и на листе своего юрлица.
+    """
+    book = Workbook()
+    # Формулы общих листов посчитать при открытии: своих значений у них в файле нет.
+    book.calculation.fullCalcOnLoad = True
+    firms = _firm_titles(items)
+    summary = book.active
+    summary.title = SHEET_TITLE
+    _fill(summary, items, firms)
+    # Порядок листов один и тот же каждый день: аренды нет - лист с одной шапкой.
+    for title in (RENT_SHEET, ABON_SHEET):
+        _fill(book.create_sheet(title), [bill for bill in items if kind_of(bill) == title], firms)
+    for own, title in firms.items():
+        _fill(book.create_sheet(title), [bill for bill in items if bill.own == own], None)
     out = io.BytesIO()
     book.save(out)
     return out.getvalue()
@@ -259,6 +337,8 @@ class Row:
     note: str = ""
     values: dict[str, str] = field(default_factory=dict)
     defaults: dict[str, str] = field(default_factory=dict)
+    #: Что вписано в строку как есть: так сверяются листы одного счёта.
+    entered: tuple[str, ...] = ()
 
     @property
     def filled(self) -> bool:
@@ -334,6 +414,13 @@ def _read_row(
     if not any((own, customer, number, code, bill_no, _text(raw_date))):
         return None  # пустая строка листа
     row = Row(sheet=sheet, row=line, own=own, customer=customer, number=number)
+    issued_on = _date(raw_date)
+    row.entered = (
+        norm(bill_no),
+        issued_on.isoformat() if issued_on else _text(raw_date),
+        _text(value("bill_period")),
+        _text(value("note")),
+    )
     bill, problem = _match(own, customer, number, _date(value("period_from")), code, everything, by_id)
     row.bill = bill
     if not bill_no and not _text(raw_date):
@@ -377,11 +464,67 @@ def _read_row(
     return row
 
 
+def _merge(rows: list[Row]) -> list[Row]:
+    """Один счёт на нескольких листах - одна строка; разное на листах - отказ.
+
+    Общие листы тянут № и дату с листа юрлица формулой, поэтому счёт стоит в
+    файле два-три раза. Вписано одно и то же (или на общем листе пусто: файл
+    сохранили, не пересчитав формулы) - это одна запись. Разное - какой номер
+    верный, KORT не угадывает. Показывается строка листа юрлица: там вписывали.
+    """
+
+    def preferred(group: list[Row]) -> Row:
+        return next((row for row in group if row.sheet not in SUMMARY_SHEETS), group[0])
+
+    # Дважды на одном листе - тоже не угадывается.
+    twins: dict[tuple[str, str], list[Row]] = {}
+    for row in rows:
+        if row.filled and row.bill is not None:
+            twins.setdefault((row.sheet, row.bill.id), []).append(row)
+    for (sheet, _), group in twins.items():
+        if len(group) > 1:
+            where = ", ".join(str(row.row) for row in group)
+            for row in group:
+                row.fail(f"Этот счёт на листе «{sheet}» несколько раз (строки {where}) - какую брать, KORT не угадывает")
+
+    groups: dict[str, list[Row]] = {}
+    order: list[Row | str] = []
+    for row in rows:
+        if row.bill is None:
+            order.append(row)
+            continue
+        if row.bill.id not in groups:
+            groups[row.bill.id] = []
+            order.append(row.bill.id)
+        groups[row.bill.id].append(row)
+    out: list[Row] = []
+    for item in order:
+        if isinstance(item, Row):
+            out.append(item)
+            continue
+        group = groups[item]
+        filled = [row for row in group if row.filled]
+        if not filled:
+            out.append(preferred(group))
+            continue
+        failed = [row for row in filled if row.status == ERROR]
+        if failed:
+            out.append(preferred(failed))
+            continue
+        chosen = preferred(filled)
+        if len({row.entered for row in filled}) > 1:
+            where = ", ".join(f"«{row.sheet}» строка {row.row}" for row in filled)
+            chosen.fail(f"На листах {where} у этого счёта вписано разное - какой номер и дата верные, KORT не угадывает")
+        out.append(chosen)
+    return out
+
+
 def parse(data: bytes, board: Board) -> dict[str, Any]:
     """Строки заполненного шаблона - с тем, что делать с каждой. В книги не пишет.
 
-    `rows` - строки файла по порядку (пустые строки листа пропущены),
-    `counts` - сколько их в каждом состоянии (`STATUSES`).
+    `rows` - счета файла по порядку: счёт с нескольких листов - одной строкой
+    (`_merge`), пустые строки листа пропущены. `counts` - сколько их в каждом
+    состоянии (`STATUSES`).
     """
     book = _open(data)
     try:
@@ -409,18 +552,9 @@ def parse(data: bytes, board: Board) -> dict[str, Any]:
                     rows.append(row)
     finally:
         book.close()
-    many_sheets = len(found) > 1
-    seen: dict[str, list[Row]] = {}
-    for row in rows:
-        if row.filled and row.bill is not None:
-            seen.setdefault(row.bill.id, []).append(row)
-    for twins in seen.values():
-        if len(twins) > 1:
-            where = ", ".join(f"«{row.sheet}» {row.row}" if many_sheets else str(row.row) for row in twins)
-            for row in twins:
-                row.fail(f"Этот счёт в файле несколько раз (строки {where}) - какую брать, KORT не угадывает")
     if not rows:
         raise TemplateError("В шаблоне нет ни одной строки счёта")
+    rows = _merge(rows)
     counts = {status: sum(1 for row in rows if row.status == status) for status in STATUSES}
     return {"rows": [row.out() for row in rows], "counts": counts}
 

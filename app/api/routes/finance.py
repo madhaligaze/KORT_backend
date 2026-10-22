@@ -2445,7 +2445,8 @@ def bills_template(member: Member = Depends(require_access("invoices"))) -> Resp
         today, items = bills_bot.listed(board)
         if not items:
             raise HTTPException(status_code=409, detail="На сегодня счетов к выставлению нет - в шаблон класть нечего")
-        data = bill_template.build(items)
+        sheets = {bills_bot.RENT: bill_template.RENT_SHEET, bills_bot.ABON: bill_template.ABON_SHEET}
+        data = bill_template.build(items, kind_of=lambda bill: sheets.get(bills_bot.kind_of(bill)))
         history.write(
             session,
             workspace,
