@@ -890,6 +890,55 @@ def test_bez_prava_pravki_zapisat_nelzya(app: FastAPI, book, books) -> None:
     assert books.updates == []
 
 
+def test_shablon_skachat_i_zagruzit(app: FastAPI, book) -> None:
+    """Шаблон: скачать из карточки, заполнить, загрузить - поля карточки, без записи в книгу."""
+    import io
+
+    from openpyxl import load_workbook
+
+    from app.finance.models import ActionLog
+
+    owner = register(app)
+    connect(owner)
+    kenesary = bill_of(owner, "ТОО KENESARY AGRO")
+    got = owner.get(f"{BASE}/bills/{kenesary['id']}/template")
+    assert got.status_code == 200, got.text
+    assert got.headers["content-type"].startswith("application/vnd.openxmlformats")
+    assert "filename*=UTF-8''" in got.headers["content-disposition"]
+    workbook = load_workbook(io.BytesIO(got.content))
+    sheet = workbook.active
+    assert sheet["D2"].value == "ТОО KENESARY AGRO" and sheet["F2"].value == "№ЮО/44" and sheet["N2"].value is None
+    sheet["N2"], sheet["O2"] = 312, datetime(2026, 10, 22)
+    out = io.BytesIO()
+    workbook.save(out)
+    parsed = owner.post(
+        f"{BASE}/bills/{kenesary['id']}/template",
+        files={"file": ("шаблон.xlsx", out.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert parsed.status_code == 200, parsed.text
+    assert parsed.json()["values"] == {"bill_no": "312", "bill_date": "2026-10-22"}
+    # Разбор книгу не трогает: счёт по-прежнему не выставлен.
+    assert any(item["customer"] == "ТОО KENESARY AGRO" for item in owner.get(f"{BASE}/bills").json()["items"])
+    bad = owner.post(f"{BASE}/bills/{kenesary['id']}/template", files={"file": ("x.xlsx", b"not a workbook", "text/plain")})
+    assert bad.status_code == 422 and "xlsx" in bad.json()["detail"]
+    with finance_session() as session:
+        kinds = [(row.kind, row.category) for row in session.scalars(sa.select(ActionLog).where(ActionLog.kind == "bill.template"))]
+    assert kinds == [("bill.template", "export")], "скачивание - в журнале, как выгрузки"
+
+    # Скачать - чтение; загрузить - только с правом «Счета: правка».
+    card = owner.post(
+        f"{BASE}/people/employees", json={"full_name": "Смотрит Счета", "phone": "+77010000003", "access": True}
+    )
+    owner.put(f"{BASE}/access/employee/{card.json()['id']}", json={"changes": {"invoices": "view"}})
+    viewer = client(app)
+    viewer.post(f"{BASE}/auth/phone/start", json={"phone": "+77010000003"})
+    viewer.post(f"{BASE}/auth/phone/set-password", json={"phone": "+77010000003", "password": "secret-123"})
+    assert viewer.get(f"{BASE}/bills/{kenesary['id']}/template").status_code == 200
+    assert viewer.post(
+        f"{BASE}/bills/{kenesary['id']}/template", files={"file": ("x.xlsx", out.getvalue(), "application/octet-stream")}
+    ).status_code == 403
+
+
 def test_pustoy_list_ne_znachit_vse_vystavleno() -> None:
     with pytest.raises(bills.BillsError, match="ещё собирается"):
         bills.build_board([HEADER], title="", worksheet="Сводка")

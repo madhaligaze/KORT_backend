@@ -95,6 +95,10 @@ COLUMNS: tuple[Column, ...] = (
     Column("period_from", "Период с (нач.)", ("период с (нач.)", "период с"), hint=18, required=False),
     Column("period_to", "Период по (зав.)", ("период по (зав.)", "период по"), hint=19, required=False),
     Column("note", "Доп. Коммент.", ("доп. коммент.", "доп. комментарий"), hint=20, required=False),
+    # Для карточки и шаблона финансистов: как клиент назван в 1С (по нему
+    # выставляют счёт) и когда заключён договор.
+    Column("onec_name", "По 1C", ("по 1c", "по 1с"), hint=10, required=False, strict=True),
+    Column("signed_at", "Дата заключения Договора", ("дата заключения договора",), hint=15, required=False, strict=True),
     # Поля счёта - только по точному названию: «Счет за Период» иначе нашлась бы
     # «похожей» на «Счет», и лист без неё не читался бы вовсе.
     Column("bill_period", "Счет за Период (Коммент)", ("счет за период (коммент)",), hint=25, required=False, strict=True),
@@ -192,6 +196,8 @@ class Bill:
     bill_no: str = ""
     bill_date: str = ""
     bill_period: str = ""
+    onec_name: str = ""
+    signed_at: str = ""
 
     @property
     def key(self) -> str:
@@ -223,6 +229,8 @@ class Bill:
             "bill_no": self.bill_no,
             "bill_date": self.bill_date,
             "bill_period": self.bill_period,
+            "onec_name": self.onec_name,
+            "signed_at": self.signed_at,
         }
 
 
@@ -310,6 +318,8 @@ def build_board(
             bill_no=layout.cell(row, "bill_no").strip(),
             bill_date=layout.cell(row, "bill_date").strip(),
             bill_period=layout.cell(row, "bill_period").strip(),
+            onec_name=layout.cell(row, "onec_name").strip(),
+            signed_at=layout.cell(row, "signed_at").strip(),
         )
         (done if group is None else bills).append(bill)
     if not count:

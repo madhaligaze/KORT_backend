@@ -2442,6 +2442,62 @@ def read_bill(bill_id: str, member: Member = Depends(require_access("invoices"))
     return out
 
 
+@router.get("/bills/{bill_id}/template")
+def bill_template(bill_id: str, member: Member = Depends(require_access("invoices"))) -> Response:
+    """Шаблон счёта Excel (формат финансистов): известное вписано, «№ Счета» и дату - заполнить.
+
+    Скачать - чтение (те же сведения, что в карточке); загрузить обратно и
+    записать - право правки.
+
+    Заполненный загружается обратно `POST …/template` и заполняет поля
+    карточки; в книгу их пишет «Записать в книгу» (`contracts/bill_template.py`).
+    """
+    _guard()
+    from app.finance.contracts import bill_template
+
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        bill, _ = _bill_of(session, workspace.id, bill_id)
+        data = bill_template.build(bill)
+        history.write(
+            session,
+            workspace,
+            kind="bill.template",
+            entity="bill",
+            title=f"шаблон счёта скачан: {bill.customer} {bill.number}, {bill.month}".strip(),
+            after={"заказчик": bill.customer, "№ договора": bill.number, "месяц": bill.month},
+            actor=_actor(member),
+        )
+    name = bill_template.filename(bill)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=\"bill.xlsx\"; filename*=UTF-8''{quote(name)}"},
+    )
+
+
+@router.post("/bills/{bill_id}/template")
+def read_bill_template(
+    bill_id: str, file: UploadFile = File(...), member: Member = Depends(require_access("invoices", "edit"))
+) -> dict[str, Any]:
+    """Заполненный шаблон - в поля карточки. В книгу не пишет: это делает «Записать в книгу».
+
+    Не `async`: чтение сводки ждёт Google до 20 с и остановило бы весь сервер.
+    """
+    _guard()
+    from app.finance.contracts import bill_template
+
+    # Не больше потолка и одного байта сверх - как у остальных загрузок.
+    data = file.file.read(bill_template.MAX_BYTES + 1)
+    with finance_session() as session:
+        workspace_id = _workspace(session, member).id
+        bill, _ = _bill_of(session, workspace_id, bill_id)
+    try:
+        return bill_template.parse(data, bill)
+    except bill_template.TemplateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/bills/{bill_id}")
 def write_bill(bill_id: str, body: BillBookIn, member: Member = Depends(require_access("invoices", "edit"))) -> dict[str, Any]:
     """Записать поля карточки счёта в строку книги юрлица (`contracts/bill_book.py`).
