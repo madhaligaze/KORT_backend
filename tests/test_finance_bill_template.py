@@ -350,6 +350,22 @@ def test_uzhe_v_knige() -> None:
     assert row["status"] == "error" and row["problem"].startswith("В книге уже № 248 от 21.09.2026 - KORT его не перезаписывает")
 
 
+def test_nomer_s_razdelitelem_tysyach_tot_zhe() -> None:
+    """Книга показывает 990101 как «990 101» (формат «#,##0»): это тот же номер, не «в книге уже другой»."""
+    issued = dataclasses.replace(AYA_SEPTEMBER, bill_no="990\xa0101")
+    data = filled(bill_template.build([AYA]), {"N2": 990101, "O2": datetime(2026, 9, 21), "Q2": issued.id})
+    other = Board(read_at=datetime(2026, 10, 22, tzinfo=timezone.utc), title="", worksheet="", spreadsheet_id="",
+                  bills=[AYA], done=[issued])
+    [row] = [row for row in bill_template.parse(data, other)["rows"] if row["status"] != "empty"]
+    assert row["status"] == "same" and row["note"] == "В книге уже № 990\xa0101 от 21.09.2026"
+    # Две записи одного счёта на разных листах: «990 101» текстом и 990101 числом - одно и то же.
+    template = bill_template.build([AYA], kind_of=kind)
+    book = workbook(fill_sheet(template, "BBCS", {"N2": 990101, "O2": datetime(2026, 10, 22)}))
+    book[REG]["N2"].value, book[REG]["O2"].value = "990 101", datetime(2026, 10, 22)
+    result = bill_template.parse(saved(book), board())
+    assert result["rows"][0]["status"] == "ready" and result["counts"]["ready"] == 1
+
+
 def test_ne_xlsx_otkaz() -> None:
     with pytest.raises(bill_template.TemplateError, match="не файл .xlsx"):
         bill_template.parse(b"%PDF-1.4 not a workbook", board())

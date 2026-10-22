@@ -289,6 +289,17 @@ def _text(value: Any) -> str:
     return " ".join(str(value).split())
 
 
+def _number(value: Any) -> str:
+    """«№ Счета» для сравнения: без пробелов и регистра.
+
+    В книгах у колонки формат «#,##0», и номер от тысячи книга показывает с
+    неразрывным пробелом: 990101 - «990 101». В файле тот же номер - «990101».
+    Сравнение по показанному тексту выдавало записанный счёт за «в книге уже
+    другой номер» (сквозная проверка на копиях книг, 23.10.2026).
+    """
+    return "".join(_text(value).split()).casefold()
+
+
 def _date(value: Any) -> date | None:
     if value is None or value == "":
         return None
@@ -422,7 +433,7 @@ def _read_row(
     row = Row(sheet=sheet, row=line, own=own, customer=customer, number=number)
     issued_on = _date(raw_date)
     row.entered = (
-        norm(bill_no),
+        _number(bill_no),
         issued_on.isoformat() if issued_on else _text(raw_date),
         _text(value("bill_period")),
         _text(value("note")),
@@ -454,7 +465,7 @@ def _read_row(
         row.fail(str(exc))
         return row
     if bill.group == DONE:
-        if norm(bill.bill_no) == norm(bill_no):
+        if _number(bill.bill_no) == _number(bill_no):
             row.status = SAME
             row.note = f"В книге уже № {bill.bill_no}" + (f" от {bill.bill_date}" if bill.bill_date else "")
             return row
