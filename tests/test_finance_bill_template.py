@@ -26,6 +26,9 @@ from openpyxl import Workbook, load_workbook
 from app.finance.contracts import bill_template
 from app.finance.contracts.bills import DONE, Bill, Board
 
+#: Имена листов - такие, чтобы Excel рисовал ярлыки на одной линии (выбор владельца 23.10.2026).
+REG, ABON = "Общий реестр", "Абонентские услуги"
+
 AYA = Bill(
     line=10, group="overdue", text="Просрочка 2–5 дней", own="BBCS", customer="ИП АЙЯ", number="№НО/39",
     month="ОКТЯБРЬ 2026", month_no=10, kind="Абон.П.", staff="Ануар", department="НО",
@@ -82,7 +85,7 @@ def kind(bill: Bill) -> str:
 
 def test_shablon_kak_u_finansistov() -> None:
     sheet = workbook(bill_template.build([AYA, RAJA, KENESARY], kind_of=kind)).active
-    assert sheet.title == "Счета"
+    assert sheet.title == REG
     heads = {cell.column_letter: cell.value for cell in sheet[1] if cell.value}
     assert heads == {
         "B": "Наша\nФирма", "C": "Наш\nСотрудник", "D": "Заказчик\n(Название Фирмы)", "E": "По 1C",
@@ -107,20 +110,20 @@ def test_shablon_kak_u_finansistov() -> None:
 
 
 def test_listy_obshchiy_reestr_vid_i_yurlica() -> None:
-    """«Счета» → «Аренда» → «Абонентская плата» → лист на юрлицо; вписывают на листе юрлица."""
+    """«Общий реестр» → «Аренда» → «Абонентские услуги» → лист на юрлицо; вписывают на листе юрлица."""
     rent = dataclasses.replace(AYA, line=20, own="BBC Omar", customer="ТОО Молфуд", number="№RENT/93", department="Аренда")
     odd = dataclasses.replace(AYA, line=21, own="Фирма: «А/Б»?", customer="ИП Странный", number="№1")
     book = workbook(bill_template.build([AYA, KENESARY, rent, RAJA, odd], kind_of=kind))
-    assert book.sheetnames == ["Счета", "Аренда", "Абонентская плата", "BBC Omar", "BBCL", "BBCS", "Фирма- «А-Б»-"]
+    assert book.sheetnames == [REG, "Аренда", ABON, "BBC Omar", "BBCL", "BBCS", "Фирма- «А-Б»-"]
     assert book.calculation.fullCalcOnLoad, "формулы считаются при открытии"
 
     def customers(title: str) -> list[str]:
         sheet = book[title]
         return [sheet[f"D{n}"].value for n in range(2, sheet.max_row + 1)]
 
-    assert customers("Счета") == ["ИП АЙЯ", "ТОО KENESARY AGRO", "ТОО Молфуд", "ИП РАЖА", "ИП Странный"]
+    assert customers(REG) == ["ИП АЙЯ", "ТОО KENESARY AGRO", "ТОО Молфуд", "ИП РАЖА", "ИП Странный"]
     assert customers("Аренда") == ["ТОО Молфуд"]
-    assert customers("Абонентская плата") == ["ИП АЙЯ", "ТОО KENESARY AGRO", "ИП РАЖА", "ИП Странный"]
+    assert customers(ABON) == ["ИП АЙЯ", "ТОО KENESARY AGRO", "ИП РАЖА", "ИП Странный"]
     assert customers("BBCS") == ["ИП АЙЯ", "ИП РАЖА"] and customers("BBCL") == ["ТОО KENESARY AGRO"]
 
     # Лист юрлица - где вписывают: жёлтое, пустое, с проверкой даты.
@@ -133,7 +136,7 @@ def test_listy_obshchiy_reestr_vid_i_yurlica() -> None:
     assert firm["Q2"].value == AYA.id and firm.column_dimensions["Q"].hidden
 
     # Общие листы тянут № и дату по коду счёта, а не по адресу клетки.
-    summary = book["Счета"]
+    summary = book[REG]
     assert summary["N2"].value == (
         "=IFERROR(IF(INDEX('BBCS'!$N$2:$N$2001,MATCH($Q2,'BBCS'!$Q$2:$Q$2001,0))=\"\",\"\","
         "INDEX('BBCS'!$N$2:$N$2001,MATCH($Q2,'BBCS'!$Q$2:$Q$2001,0))),\"\")"
@@ -149,7 +152,7 @@ def test_listy_obshchiy_reestr_vid_i_yurlica() -> None:
 
 def test_pustoy_vid_list_s_odnoy_shapkoy() -> None:
     book = workbook(bill_template.build([AYA], kind_of=kind))
-    assert book.sheetnames == ["Счета", "Аренда", "Абонентская плата", "BBCS"]
+    assert book.sheetnames == [REG, "Аренда", ABON, "BBCS"]
     assert book["Аренда"].max_row == 1 and book["Аренда"]["N1"].value == "№ \nСчета"
 
 
@@ -172,7 +175,7 @@ def test_zapolneno_na_liste_yurlica_odna_zapis() -> None:
 
     # Как после пересчёта Excel: общие листы показывают то же самое - всё равно одна запись.
     recalculated = workbook(on_firm)
-    for title, row in (("Счета", 2), ("Абонентская плата", 2)):
+    for title, row in ((REG, 2), (ABON, 2)):
         recalculated[title][f"N{row}"].value = 312
         recalculated[title][f"O{row}"].value = datetime(2026, 10, 22)
     result = bill_template.parse(saved(recalculated), board())
@@ -180,22 +183,33 @@ def test_zapolneno_na_liste_yurlica_odna_zapis() -> None:
     assert result["counts"]["ready"] == 1
 
     # Вписали прямо в общий реестр, лист юрлица пуст - тоже принимается.
-    on_summary = fill_sheet(template, "Счета", {"N4": "248/1", "O4": "22.10.2026"})
+    on_summary = fill_sheet(template, REG, {"N4": "248/1", "O4": "22.10.2026"})
     result = bill_template.parse(on_summary, board())
     kenesary = next(row for row in result["rows"] if row["customer"] == "ТОО KENESARY AGRO")
-    assert (kenesary["status"], kenesary["sheet"], kenesary["values"]["bill_no"]) == ("ready", "Счета", "248/1")
+    assert (kenesary["status"], kenesary["sheet"], kenesary["values"]["bill_no"]) == ("ready", REG, "248/1")
+
+
+def test_shablon_so_starymi_imenami_listov() -> None:
+    """Шаблон, скачанный до 23.10.2026 («Счета», «Абонентская плата»): общие листы узнаются и по старым именам."""
+    book = workbook(bill_template.build([AYA, RAJA], kind_of=kind))
+    book[REG].title, book[ABON].title = "Счета", "Абонентская плата"
+    book["BBCS"]["N2"].value, book["BBCS"]["O2"].value = 312, datetime(2026, 10, 22)
+    book["Счета"]["N2"].value, book["Счета"]["O2"].value = 312, datetime(2026, 10, 22)  # как после пересчёта Excel
+    result = bill_template.parse(saved(book), board())
+    assert (result["rows"][0]["sheet"], result["rows"][0]["status"]) == ("BBCS", "ready")
+    assert result["counts"]["ready"] == 1
 
 
 def test_raznoe_na_listah_otkaz() -> None:
     template = bill_template.build([AYA, RAJA], kind_of=kind)
     book = workbook(fill_sheet(template, "BBCS", {"N2": 312, "O2": datetime(2026, 10, 22)}))
-    book["Счета"]["N2"].value = 313  # на общем листе вписали поверх формулы другое
-    book["Счета"]["O2"].value = datetime(2026, 10, 22)
+    book[REG]["N2"].value = 313  # на общем листе вписали поверх формулы другое
+    book[REG]["O2"].value = datetime(2026, 10, 22)
     result = bill_template.parse(saved(book), board())
     aya = result["rows"][0]
     assert aya["status"] == "error" and aya["values"] == {}
     assert aya["problem"] == (
-        "На листах «Счета» строка 2, «BBCS» строка 2 у этого счёта вписано разное - какой номер и дата верные, KORT не угадывает"
+        "На листах «Общий реестр» строка 2, «BBCS» строка 2 у этого счёта вписано разное - какой номер и дата верные, KORT не угадывает"
     )
     assert result["counts"] == {"ready": 0, "same": 0, "empty": 1, "error": 1}
 
@@ -231,7 +245,7 @@ def test_zapolnennyy_shablon_v_stroki() -> None:
     result = bill_template.parse(data, board())
     assert statuses(result) == [("ИП АЙЯ", "ready"), ("ИП РАЖА", "empty"), ("ТОО KENESARY AGRO", "ready")]
     aya, raja, kenesary = result["rows"]
-    assert aya["id"] == AYA.id and aya["sheet"] == "Счета" and aya["row"] == 2
+    assert aya["id"] == AYA.id and aya["sheet"] == REG and aya["row"] == 2
     assert aya["values"] == {"bill_no": "312", "bill_date": "2026-10-22"}
     assert aya["defaults"] == {"bill_period": "с 20.10.2026 года по 19.11.2026 года"}, "как подставляет карточка"
     assert aya["own"] == "BBCS" and aya["period_from"] == "2026-10-20" and aya["amount"] == "91000"

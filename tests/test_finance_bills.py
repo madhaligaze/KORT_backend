@@ -985,7 +985,7 @@ def test_shablon_scheta_razdela(app: FastAPI, book, books, monkeypatch) -> None:
     assert customers == [
         "ТОО KENESARY AGRO", "ИП АЙЯ", "ТОО Find Dream", "ТОО Custom Trade", "ТОО Молфуд", "ADK Home", "ИП ЖАЛМҰХАН",
     ]
-    assert workbook.sheetnames == ["Счета", "Аренда", "Абонентская плата", "BBC", "BBC Omar", "BBCL", "BBCS"]
+    assert workbook.sheetnames == ["Общий реестр", "Аренда", "Абонентские услуги", "BBC", "BBC Omar", "BBCL", "BBCS"]
     assert [workbook["Аренда"][f"D{n}"].value for n in range(2, workbook["Аренда"].max_row + 1)] == [
         "ТОО Find Dream", "ТОО Custom Trade", "ТОО Молфуд", "ИП ЖАЛМҰХАН",
     ]
