@@ -80,6 +80,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("amount", "Сумма Договора", ("сумма договора",), hint=12, required=False),
     Column("department", "Отдел", ("отдел",), hint=13, required=False),
     Column("period_from", "Период с (нач.)", ("период с (нач.)", "период с"), hint=18, required=False),
+    Column("period_to", "Период по (зав.)", ("период по (зав.)", "период по"), hint=19, required=False),
     Column("note", "Доп. Коммент.", ("доп. коммент.", "доп. комментарий"), hint=20, required=False),
     Column("paid", "Факт Оплата", ("факт оплата",), hint=28, required=False),
     Column(
@@ -103,7 +104,8 @@ def state_of(value: Any) -> str | None:
         return None
     if text.startswith("просрочка"):
         return OVERDUE
-    if "до выставления" in text:
+    # «Сегодня день выставления» уходило в «Без срока»: день счёта, а не неизвестность.
+    if "до выставления" in text or text.startswith("сегодня"):
         return SOON
     if text.startswith("еще рано"):
         return EARLY
@@ -160,6 +162,7 @@ class Bill:
     department: str
     amount: Decimal | None
     period_from: date | None
+    period_to: date | None
     paid: str
     status: str
     note: str
@@ -182,6 +185,7 @@ class Bill:
             "department": self.department,
             "amount": str(self.amount) if self.amount is not None else None,
             "period_from": self.period_from.isoformat() if self.period_from else None,
+            "period_to": self.period_to.isoformat() if self.period_to else None,
             "paid": self.paid,
             "status": self.status,
             "note": self.note,
@@ -265,6 +269,7 @@ def build_board(
                 department=layout.cell(row, "department").strip(),
                 amount=read_money(amount_text) if amount_text else None,
                 period_from=read_date(layout.cell(row, "period_from")),
+                period_to=read_date(layout.cell(row, "period_to")),
                 paid=_paid(layout.cell(row, "paid")),
                 status=layout.cell(row, "status").strip(),
                 note=layout.cell(row, "note").strip(),
