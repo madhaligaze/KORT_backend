@@ -102,6 +102,44 @@ def test_chuzhaya_pravka_ne_zatiraetsya() -> None:
     assert api.updates == []
 
 
+def test_v_knige_uzhe_to_zhe_samoe_ne_konflikt() -> None:
+    """Номер в книге уже наш (повтор записи, ответ на которую потерялся) - не чужая правка."""
+    api = fake_api()
+    october(api).put(ROW, Z, 312)
+    saved = issue(api)
+    assert saved.changed == ["bill_date"] and saved.after["bill_no"] == "312"
+    october(api).put(ROW, AA, 1)  # а дату за это время поменяли - вот это чужая правка
+    with pytest.raises(bill_book.BookError) as caught:
+        bill_book.save(api, SUMMARY, KENESARY, SHOWN, {"bill_no": "312", "bill_date": "2026-10-23"})
+    assert caught.value.status == 409 and "Дата выстав. Счета" in str(caught.value)
+
+
+PERIOD = {"bill_period": "с 22.10.2026 года по 21.11.2026 года"}
+
+
+def test_defaults_pishutsya_tolko_v_pustoe() -> None:
+    """«Счет за Период» из шаблона Excel: пусто в книге - пишется; заполнено - не трогается и записи не мешает."""
+    api = fake_api()
+    saved = bill_book.save(api, SUMMARY, KENESARY, {"bill_no": ""}, {"bill_no": "312", "bill_date": "2026-10-22"}, PERIOD)
+    assert saved.changed == ["bill_no", "bill_date", "bill_period"] and len(api.updates) == 1
+    assert october(api).cell(ROW, Y)["value"] == PERIOD["bill_period"]
+
+    api = fake_api()
+    october(api).put(ROW, Y, "за октябрь, по договорённости")
+    saved = bill_book.save(api, SUMMARY, KENESARY, {"bill_no": ""}, {"bill_no": "312", "bill_date": "2026-10-22"}, PERIOD)
+    assert saved.changed == ["bill_no", "bill_date"]
+    assert october(api).cell(ROW, Y)["value"] == "за октябрь, по договорённости", "вписанное человеком цело"
+
+
+def test_defaults_mimo_formuly() -> None:
+    """Над «Счет за Период» формула: подставленное не пишется, а № и дата - пишутся."""
+    api = fake_api()
+    october(api).put(ROW, Y, "", formula='=IF(Z6<>""; "по счёту"; "")')
+    saved = bill_book.save(api, SUMMARY, KENESARY, {"bill_no": ""}, {"bill_no": "312", "bill_date": "2026-10-22"}, PERIOD)
+    assert saved.changed == ["bill_no", "bill_date"]
+    assert october(api).cell(ROW, Y)["entered"] == {"formulaValue": '=IF(Z6<>""; "по счёту"; "")'}
+
+
 def test_formula_v_pole_ne_zatiraetsya() -> None:
     api = fake_api()
     october(api).put(ROW, Z, 7, formula="=MAX(Z4:Z5)+1")
@@ -201,6 +239,33 @@ def test_google_ne_podtverdil_zapis() -> None:
     with pytest.raises(bill_book.BookError, match="Google не подтвердил запись") as caught:
         issue(api)
     assert caught.value.place is not None
+
+
+def test_limit_google_otdelno_i_povtor_bezopasen(monkeypatch) -> None:
+    """«Лимит» и после повторов - 429, а не «не подтвердил»: запрос отклонён, книга не тронута; повтор пишет."""
+    monkeypatch.setattr(bill_book, "RATE_PAUSES", (0.0, 0.0))
+    calls = []
+
+    def limited():
+        calls.append(1)
+        raise RuntimeError("APIError: [429]: Quota exceeded for quota metric 'Read requests'")
+
+    with pytest.raises(bill_book.BookError) as caught:
+        bill_book._google(limited)
+    assert caught.value.status == 429 and len(calls) == 3 and "проходит само" in str(caught.value)
+    with pytest.raises(bill_book.BookError) as other:
+        bill_book._google(lambda: (_ for _ in ()).throw(RuntimeError("APIError: [500]: backend error")))
+    assert other.value.status == 424
+
+    api = fake_api()
+    api.fail_update = bill_book.BookError("Google временно ограничил чтение", status=429)
+    with pytest.raises(bill_book.BookError) as refused:
+        bill_book.save(api, SUMMARY, KENESARY, {"bill_no": ""}, {"bill_no": "312", "bill_date": "2026-10-22"}, PERIOD)
+    assert refused.value.status == 429 and str(refused.value).endswith("Ничего не записано")
+    assert october(api).cell(ROW, Z)["value"] is None
+    api.fail_update = None
+    saved = bill_book.save(api, SUMMARY, KENESARY, {"bill_no": ""}, {"bill_no": "312", "bill_date": "2026-10-22"}, PERIOD)
+    assert saved.changed == ["bill_no", "bill_date", "bill_period"]
 
 
 def test_znacheniya_proveryayutsya() -> None:

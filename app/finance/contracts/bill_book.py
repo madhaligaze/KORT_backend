@@ -95,9 +95,11 @@ class BookError(Exception):
 
     `status` - код ответа API: 404 - строки нет, 409 - книгу правили
     параллельно, 422 - неверное значение, 424 - Google не ответил или книга
-    устроена не так, как KORT умеет писать. Не 5xx: посредник перед сервером
-    мог бы заменить ответ своим «Сервер не отвечает», и человек не узнал бы,
-    что запись отменена и книга возвращена.
+    устроена не так, как KORT умеет писать, 429 - Google и после повторов
+    просит подождать (лимит обращений в минуту): ничего не записано, повтор
+    через полминуты безопасен. Не 5xx: посредник перед сервером мог бы
+    заменить ответ своим «Сервер не отвечает», и человек не узнал бы, что
+    запись отменена и книга возвращена.
     """
 
     def __init__(self, message: str, *, status: int = 424, place: Any = None, changed: list[str] | None = None) -> None:
@@ -151,7 +153,7 @@ def _google(call: Any) -> Any:
                 log.info("счета: Google ответил «лимит» - повтор через %s с", pause)
                 time.sleep(pause)
                 continue
-            raise BookError(google.humanize(exc), status=424) from exc
+            raise BookError(google.humanize(exc), status=429 if _limited(exc) else 424) from exc
     raise BookError("Google не ответил", status=424)  # недостижимо: последний проход либо вернул, либо бросил
 
 
@@ -722,13 +724,28 @@ def _lock_of(key: str) -> threading.Lock:
         return _row_locks.setdefault(key, threading.Lock())
 
 
-def save(api: Api, summary: tuple[str, str], key: str, expect: dict[str, Any], values: dict[str, Any]) -> Saved:
+def save(
+    api: Api,
+    summary: tuple[str, str],
+    key: str,
+    expect: dict[str, Any],
+    values: dict[str, Any],
+    defaults: dict[str, Any] | None = None,
+) -> Saved:
     """Записать поля карточки в строку книги юрлица - по правилам из шапки модуля.
 
     `expect` - поля такими, какими их показала карточка: если в книге они уже
-    другие, запись отменяется (409), чтобы не затереть чужую правку.
+    другие, запись отменяется (409), чтобы не затереть чужую правку. Если же в
+    книге уже ровно то, что пишем, - это не чужая правка, а та же: отказа нет
+    (повтор записи, ответ на которую потерялся по дороге).
+
+    `defaults` - поля, которые пишутся, только если в книге они пусты и туда
+    можно писать: «Счет за Период» при выставлении из шаблона Excel (карточка
+    подставляет его так же). Заполненное в книге они не трогают и записи не
+    отменяют.
     """
     wanted = wanted_values(values)
+    extra = wanted_values(defaults or {})
     if not wanted:
         raise BookError("Нечего записывать", status=422)
     final_no = wanted["bill_no"] if "bill_no" in wanted else None
@@ -744,6 +761,8 @@ def save(api: Api, summary: tuple[str, str], key: str, expect: dict[str, Any], v
             raise BookError("У выставленного счёта нужна дата выставления", status=422)
         for name in wanted:
             if name in expect and str(expect[name] or "").strip() != shown[name]:
+                if _holds(before.cell(place.tab.columns[name]), wanted[name]):
+                    continue
                 raise BookError(
                     f"«{TITLES[name]}» в книге за это время поменяли: было «{expect[name] or ''}», "
                     f"стало «{shown[name]}». Откройте карточку заново",
@@ -753,6 +772,13 @@ def save(api: Api, summary: tuple[str, str], key: str, expect: dict[str, Any], v
         undo: list[dict[str, Any]] = []
         changed: list[str] = []
         above: dict[str, str] | None = None
+        for name, value in extra.items():
+            if name in wanted or name not in place.tab.columns or shown[name] or _blocked(place, before, name):
+                continue
+            if above is None:
+                above = _spilling_above(api, place)
+            if not above.get(name):
+                wanted[name] = value
         for name, value in wanted.items():
             index = place.tab.columns[name]
             cell = before.cell(index)
@@ -783,6 +809,9 @@ def save(api: Api, summary: tuple[str, str], key: str, expect: dict[str, Any], v
         try:
             api.update(place.book.spreadsheet_id, requests)
         except BookError as exc:
+            if exc.status == 429:
+                # «Лимит» Google отклоняет запрос целиком, не выполнив: в книге ничего не поменялось.
+                raise BookError(f"{exc}. Ничего не записано", status=429, place=place, changed=changed) from exc
             # Запрос мог дойти, а ответ - потеряться: записано или нет, видно
             # только по книге. Карточка, открытая заново, покажет.
             raise BookError(

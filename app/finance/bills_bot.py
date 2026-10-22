@@ -361,6 +361,30 @@ def sections(items: Iterable[bills.Bill], today: date) -> list[Section]:
     return out
 
 
+def listed(board: bills.Board) -> tuple[date, list[bills.Bill]]:
+    """Счета постов в порядке постов - для шаблона Excel раздела «Счета» (`contracts/bill_template.py`).
+
+    Абонентская плата, затем аренда - по разделам поста; за ними те, что пост
+    называет строкой: «без вида услуги» и «без даты». Финансисты заполняют те
+    же счета, что видят в канале. Возвращает и день, на который список.
+    """
+    now = _now()
+    due: list[bills.Bill] = []
+    named: list[bills.Bill] = []
+    for kind in KINDS:
+        p = plan(board, now, kind)
+        due.extend(bill for part in sections(p.due, p.today) for bill in part.items)
+        named.extend((*p.unknown, *p.undated))
+    named.sort(key=lambda bill: (bill.own.casefold(), bill.line))
+    seen: set[str] = set()
+    out: list[bills.Bill] = []
+    for bill in (*due, *named):
+        if bill.key not in seen:
+            seen.add(bill.key)
+            out.append(bill)
+    return now.astimezone(TZ).date(), out
+
+
 def _name(bill: bills.Bill) -> str:
     link = bill_link(bill)
     name = _esc(bill.customer)

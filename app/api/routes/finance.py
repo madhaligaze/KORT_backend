@@ -2357,6 +2357,8 @@ def list_bills(member: Member = Depends(require_access("invoices")), refresh: bo
         source = source_of(session, workspace_id)
         summary = (source.spreadsheet_id, source.worksheet) if source is not None else None
     out["channel"] = bills_bot.channel_out(workspace_id) if out["source"] else None
+    # Загрузить шаблон Excel и записать из него - право правки; скачать - чтение.
+    out["can_edit"] = member.rights.can("invoices", "edit")
     if summary is not None:
         # Книги юрлиц - заранее, в фоне: иначе первая карточка ждёт все девять.
         bill_book.warm(bill_book.api(), summary)
@@ -2368,32 +2370,41 @@ class BillBookIn(BaseModel):
 
     `values` - что записать (`bill_no`, `bill_date` в ISO, `bill_period`,
     `note`); `expect` - какими эти поля показала карточка: если в книге они уже
-    другие, запись отменяется, чтобы не затереть чужую правку.
+    другие, запись отменяется, чтобы не затереть чужую правку. `defaults` -
+    что дописать, только если в книге пусто: «Счет за Период» при выставлении
+    из шаблона Excel (`bill_book.save`).
     """
 
     values: dict[str, str]
     expect: dict[str, str] = Field(default_factory=dict)
+    defaults: dict[str, str] = Field(default_factory=dict)
 
 
-def _bill_of(session: Any, workspace_id: UUID, bill_id: str) -> tuple[Any, tuple[str, str]]:
-    """Счёт из книги-сводки по адресу карточки - и сама сводка."""
+def _board_of(session: Any, workspace_id: UUID) -> tuple[Any, tuple[str, str]]:
+    """Прочитанная книга-сводка (с записанным из KORT) - и откуда она."""
     from app.finance.contracts import bills as bills_module
     from app.finance.contracts.summary import source_of
 
-    if not _is_bill_id(bill_id):
-        raise HTTPException(status_code=404, detail="Такого счёта нет")
     source = source_of(session, workspace_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Книга-сводка не подключена")
     board, error = bills_module.current(session, workspace_id)
     if board is None:
         raise HTTPException(status_code=503, detail=error or "Книга-сводка ещё читается - попробуйте через минуту")
+    return board, (source.spreadsheet_id, source.worksheet)
+
+
+def _bill_of(session: Any, workspace_id: UUID, bill_id: str) -> tuple[Any, tuple[str, str]]:
+    """Счёт из книги-сводки по адресу карточки - и сама сводка."""
+    if not _is_bill_id(bill_id):
+        raise HTTPException(status_code=404, detail="Такого счёта нет")
+    board, summary = _board_of(session, workspace_id)
     bill = board.find(bill_id)
     if bill is None:
         raise HTTPException(
             status_code=404, detail="Такого счёта в книге-сводке нет - строку могли переименовать или удалить"
         )
-    return bill, (source.spreadsheet_id, source.worksheet)
+    return bill, summary
 
 
 def _is_bill_id(value: str) -> bool:
@@ -2414,6 +2425,66 @@ def _journal_bill(member: Member, bill: Any, place: Any, *, kind: str, title: st
             after={**after, "книга": place.book.title, "вкладка": place.tab.title, "строка": place.row},
             actor=_actor(member),
         )
+
+
+@router.get("/bills/template")
+def bills_template(member: Member = Depends(require_access("invoices"))) -> Response:
+    """Шаблон счетов Excel (формат финансистов): счета постов бота, «№ Счета» и дату - заполнить.
+
+    Скачать - чтение (те же сведения, что в разделе); загрузить обратно и
+    записать - право правки. Объявлен раньше `/bills/{bill_id}`: иначе
+    «template» приняли бы за адрес счёта.
+    """
+    _guard()
+    from app.finance import bills_bot
+    from app.finance.contracts import bill_template
+
+    with finance_session() as session:
+        workspace = _workspace(session, member)
+        board, _ = _board_of(session, workspace.id)
+        today, items = bills_bot.listed(board)
+        if not items:
+            raise HTTPException(status_code=409, detail="На сегодня счетов к выставлению нет - в шаблон класть нечего")
+        data = bill_template.build(items)
+        history.write(
+            session,
+            workspace,
+            kind="bill.template",
+            entity="bill",
+            title=f"шаблон счетов скачан: {len(items)} шт. на {today:%d.%m.%Y}",
+            after={"счетов": len(items), "на день": today.strftime("%d.%m.%Y")},
+            actor=_actor(member),
+        )
+    name = bill_template.filename(today)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=\"bills.xlsx\"; filename*=UTF-8''{quote(name)}"},
+    )
+
+
+@router.post("/bills/template")
+def read_bills_template(
+    file: UploadFile = File(...), member: Member = Depends(require_access("invoices", "edit"))
+) -> dict[str, Any]:
+    """Заполненный шаблон - в строки: какой это счёт и что с ним делать. В книги не пишет.
+
+    Каждую готовую строку в книгу её юрлица пишет `POST /bills/{bill_id}` -
+    та же запись, что у карточки. Не `async`: чтение сводки ждёт Google до
+    20 с и остановило бы весь сервер.
+    """
+    _guard()
+    from app.finance.contracts import bill_template
+
+    # Не больше потолка и одного байта сверх - как у остальных загрузок.
+    data = file.file.read(bill_template.MAX_BYTES + 1)
+    with finance_session() as session:
+        workspace_id = _workspace(session, member).id
+        board, _ = _board_of(session, workspace_id)
+    try:
+        return bill_template.parse(data, board)
+    except bill_template.TemplateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/bills/{bill_id}")
@@ -2442,62 +2513,6 @@ def read_bill(bill_id: str, member: Member = Depends(require_access("invoices"))
     return out
 
 
-@router.get("/bills/{bill_id}/template")
-def bill_template(bill_id: str, member: Member = Depends(require_access("invoices"))) -> Response:
-    """Шаблон счёта Excel (формат финансистов): известное вписано, «№ Счета» и дату - заполнить.
-
-    Скачать - чтение (те же сведения, что в карточке); загрузить обратно и
-    записать - право правки.
-
-    Заполненный загружается обратно `POST …/template` и заполняет поля
-    карточки; в книгу их пишет «Записать в книгу» (`contracts/bill_template.py`).
-    """
-    _guard()
-    from app.finance.contracts import bill_template
-
-    with finance_session() as session:
-        workspace = _workspace(session, member)
-        bill, _ = _bill_of(session, workspace.id, bill_id)
-        data = bill_template.build(bill)
-        history.write(
-            session,
-            workspace,
-            kind="bill.template",
-            entity="bill",
-            title=f"шаблон счёта скачан: {bill.customer} {bill.number}, {bill.month}".strip(),
-            after={"заказчик": bill.customer, "№ договора": bill.number, "месяц": bill.month},
-            actor=_actor(member),
-        )
-    name = bill_template.filename(bill)
-    return Response(
-        content=data,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=\"bill.xlsx\"; filename*=UTF-8''{quote(name)}"},
-    )
-
-
-@router.post("/bills/{bill_id}/template")
-def read_bill_template(
-    bill_id: str, file: UploadFile = File(...), member: Member = Depends(require_access("invoices", "edit"))
-) -> dict[str, Any]:
-    """Заполненный шаблон - в поля карточки. В книгу не пишет: это делает «Записать в книгу».
-
-    Не `async`: чтение сводки ждёт Google до 20 с и остановило бы весь сервер.
-    """
-    _guard()
-    from app.finance.contracts import bill_template
-
-    # Не больше потолка и одного байта сверх - как у остальных загрузок.
-    data = file.file.read(bill_template.MAX_BYTES + 1)
-    with finance_session() as session:
-        workspace_id = _workspace(session, member).id
-        bill, _ = _bill_of(session, workspace_id, bill_id)
-    try:
-        return bill_template.parse(data, bill)
-    except bill_template.TemplateError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
 @router.post("/bills/{bill_id}")
 def write_bill(bill_id: str, body: BillBookIn, member: Member = Depends(require_access("invoices", "edit"))) -> dict[str, Any]:
     """Записать поля карточки счёта в строку книги юрлица (`contracts/bill_book.py`).
@@ -2515,7 +2530,7 @@ def write_bill(bill_id: str, body: BillBookIn, member: Member = Depends(require_
         bill, summary = _bill_of(session, workspace_id, bill_id)
     where = f"{bill.customer} {bill.number}, {bill.month}".strip()
     try:
-        saved = bill_book.save(bill_book.api(), summary, bill.key, body.expect, body.values)
+        saved = bill_book.save(bill_book.api(), summary, bill.key, body.expect, body.values, body.defaults)
     except bill_book.BookError as exc:
         if exc.place is not None:
             _journal_bill(
@@ -2528,8 +2543,10 @@ def write_bill(bill_id: str, body: BillBookIn, member: Member = Depends(require_
                 after={"ошибка": str(exc), "поля": [bill_book.TITLES[name] for name in exc.changed]},
             )
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    # Книга такая, какой её перечитали, - и тогда, когда писать было нечего:
+    # повтор записи, ответ на которую потерялся, тоже должен убрать счёт из списка.
+    bills_module.mark(workspace_id, bill.key, saved.after)
     if saved.changed:
-        bills_module.mark(workspace_id, bill.key, saved.after)
         number, issued_at = saved.after["bill_no"], saved.after["bill_date"]
         if number and not saved.before["bill_no"]:
             title = f"счёт выставлен в книге: {where} - № {number}" + (f" от {issued_at}" if issued_at else "")

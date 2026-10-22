@@ -30,6 +30,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from urllib.parse import unquote
 
 import pytest
 import sqlalchemy as sa
@@ -957,40 +958,88 @@ def test_bez_prava_pravki_zapisat_nelzya(app: FastAPI, book, books) -> None:
     assert books.updates == []
 
 
-def test_shablon_skachat_i_zagruzit(app: FastAPI, book) -> None:
-    """Шаблон: скачать из карточки, заполнить, загрузить - поля карточки, без записи в книгу."""
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def test_shablon_scheta_razdela(app: FastAPI, book, books, monkeypatch) -> None:
+    """Шаблон в разделе «Счета»: счета постов одним файлом; заполненный - строками; каждую пишет запись карточки."""
     import io
 
     from openpyxl import load_workbook
 
     from app.finance.models import ActionLog
 
+    monkeypatch.setattr(bills_bot, "_now", lambda: NOW)
     owner = register(app)
     connect(owner)
-    kenesary = bill_of(owner, "ТОО KENESARY AGRO")
-    got = owner.get(f"{BASE}/bills/{kenesary['id']}/template")
+    assert owner.get(f"{BASE}/bills").json()["can_edit"] is True
+
+    got = owner.get(f"{BASE}/bills/template")
     assert got.status_code == 200, got.text
-    assert got.headers["content-type"].startswith("application/vnd.openxmlformats")
-    assert "filename*=UTF-8''" in got.headers["content-disposition"]
+    assert got.headers["content-type"].startswith(XLSX)
+    assert "filename*=UTF-8''" in got.headers["content-disposition"] and "22.10.2026" in unquote(got.headers["content-disposition"])
     workbook = load_workbook(io.BytesIO(got.content))
     sheet = workbook.active
-    assert sheet["D2"].value == "ТОО KENESARY AGRO" and sheet["F2"].value == "№ЮО/44" and sheet["N2"].value is None
-    sheet["N2"], sheet["O2"] = 312, datetime(2026, 10, 22)
+    customers = [sheet[f"D{n}"].value for n in range(2, sheet.max_row + 1)]
+    # Как в постах: абонентская плата, аренда - по разделам; затем «без вида услуги» и «без даты».
+    assert customers == [
+        "ТОО KENESARY AGRO", "ИП АЙЯ", "ТОО Find Dream", "ТОО Custom Trade", "ТОО Молфуд", "ADK Home", "ИП ЖАЛМҰХАН",
+    ]
+    assert all(sheet[f"N{n}"].value is None for n in range(2, sheet.max_row + 1))
+    rows = {sheet[f"D{n}"].value: n for n in range(2, sheet.max_row + 1)}
+    sheet[f"N{rows['ТОО KENESARY AGRO']}"], sheet[f"O{rows['ТОО KENESARY AGRO']}"] = 312, datetime(2026, 10, 22)
+    sheet[f"N{rows['ТОО Custom Trade']}"], sheet[f"O{rows['ТОО Custom Trade']}"] = "А-17", "22.10.2026"
+    sheet[f"N{rows['ИП АЙЯ']}"] = 313  # без даты - отказ этой строке
     out = io.BytesIO()
     workbook.save(out)
-    parsed = owner.post(
-        f"{BASE}/bills/{kenesary['id']}/template",
-        files={"file": ("шаблон.xlsx", out.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-    )
+    filled = out.getvalue()
+
+    parsed = owner.post(f"{BASE}/bills/template", files={"file": ("шаблон.xlsx", filled, XLSX)})
     assert parsed.status_code == 200, parsed.text
-    assert parsed.json()["values"] == {"bill_no": "312", "bill_date": "2026-10-22"}
-    # Разбор книгу не трогает: счёт по-прежнему не выставлен.
-    assert any(item["customer"] == "ТОО KENESARY AGRO" for item in owner.get(f"{BASE}/bills").json()["items"])
-    bad = owner.post(f"{BASE}/bills/{kenesary['id']}/template", files={"file": ("x.xlsx", b"not a workbook", "text/plain")})
+    by_name = {row["customer"]: row for row in parsed.json()["rows"]}
+    assert parsed.json()["counts"] == {"ready": 2, "same": 0, "empty": 4, "error": 1}
+    assert by_name["ИП АЙЯ"]["problem"] == "«Дата выстав. Счета» - пусто"
+    kenesary, trade = by_name["ТОО KENESARY AGRO"], by_name["ТОО Custom Trade"]
+    assert kenesary["values"] == {"bill_no": "312", "bill_date": "2026-10-22"}
+    assert kenesary["defaults"] == {"bill_period": "с 22.10.2026 года по 21.11.2026 года"}
+    # Разбор книги не трогает: счета по-прежнему не выставлены.
+    assert books.updates == []
+    assert {"ТОО KENESARY AGRO", "ТОО Custom Trade"} <= {item["customer"] for item in owner.get(f"{BASE}/bills").json()["items"]}
+
+    # Каждую готовую строку пишет та же запись, что у карточки - в книгу своего юрлица.
+    for row in (kenesary, trade):
+        saved = owner.post(
+            f"{BASE}/bills/{row['id']}", json={"values": row["values"], "expect": {"bill_no": ""}, "defaults": row["defaults"]}
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["book"]["state"] == "TRUE"
+    legal = books.books["legal-id"].tabs["Октябрь"]
+    rent = books.books["rent-id"].tabs["Октябрь"]
+    from bill_book_fake import Y, Z
+
+    assert legal.cell(5, Z)["value"] == 312 and legal.cell(5, Y)["value"] == "с 22.10.2026 года по 21.11.2026 года"
+    assert rent.cell(3, Z)["value"] == "А-17" and rent.cell(3, Y)["value"] == "с 21.10.2026 года по 20.11.2026 года"
+    left = {item["customer"] for item in owner.get(f"{BASE}/bills").json()["items"]}
+    assert "ТОО KENESARY AGRO" not in left and "ТОО Custom Trade" not in left, "список видит запись сразу"
+
+    # Тот же файл ещё раз: записанное - «уже в книге», второй записи нет.
+    again = owner.post(f"{BASE}/bills/template", files={"file": ("шаблон.xlsx", filled, XLSX)}).json()
+    assert {row["customer"]: row["status"] for row in again["rows"] if row["status"] != "empty"} == {
+        "ТОО KENESARY AGRO": "same", "ТОО Custom Trade": "same", "ИП АЙЯ": "error",
+    }
+    # Повтор записи, ответ на которую потерялся: книга уже такая - не конфликт и не вторая запись.
+    repeat = owner.post(
+        f"{BASE}/bills/{kenesary['id']}", json={"values": kenesary["values"], "expect": {"bill_no": ""}, "defaults": kenesary["defaults"]}
+    )
+    assert repeat.status_code == 200 and repeat.json()["changed"] == [] and len(books.updates) == 2
+
+    bad = owner.post(f"{BASE}/bills/template", files={"file": ("x.xlsx", b"not a workbook", "text/plain")})
     assert bad.status_code == 422 and "xlsx" in bad.json()["detail"]
     with finance_session() as session:
-        kinds = [(row.kind, row.category) for row in session.scalars(sa.select(ActionLog).where(ActionLog.kind == "bill.template"))]
-    assert kinds == [("bill.template", "export")], "скачивание - в журнале, как выгрузки"
+        logged = [(row.kind, row.category, row.title) for row in session.scalars(sa.select(ActionLog).where(ActionLog.kind == "bill.template"))]
+        written = session.scalar(sa.select(sa.func.count()).select_from(ActionLog).where(ActionLog.kind == "bill.book"))
+    assert logged == [("bill.template", "export", "шаблон счетов скачан: 7 шт. на 22.10.2026")], "скачивание - в журнале, как выгрузки"
+    assert written == 2, "каждая записанная строка - в журнале"
 
     # Скачать - чтение; загрузить - только с правом «Счета: правка».
     card = owner.post(
@@ -1000,10 +1049,15 @@ def test_shablon_skachat_i_zagruzit(app: FastAPI, book) -> None:
     viewer = client(app)
     viewer.post(f"{BASE}/auth/phone/start", json={"phone": "+77010000003"})
     viewer.post(f"{BASE}/auth/phone/set-password", json={"phone": "+77010000003", "password": "secret-123"})
-    assert viewer.get(f"{BASE}/bills/{kenesary['id']}/template").status_code == 200
-    assert viewer.post(
-        f"{BASE}/bills/{kenesary['id']}/template", files={"file": ("x.xlsx", out.getvalue(), "application/octet-stream")}
-    ).status_code == 403
+    assert viewer.get(f"{BASE}/bills").json()["can_edit"] is False
+    assert viewer.get(f"{BASE}/bills/template").status_code == 200
+    assert viewer.post(f"{BASE}/bills/template", files={"file": ("x.xlsx", filled, XLSX)}).status_code == 403
+
+    # Выставлять нечего - шаблона нет, сказано словами.
+    issue_all(book["values"])
+    fresh()
+    empty = owner.get(f"{BASE}/bills/template")
+    assert empty.status_code == 409 and "нечего" in empty.json()["detail"]
 
 
 def test_pustoy_list_ne_znachit_vse_vystavleno() -> None:
@@ -1037,7 +1091,7 @@ def test_bez_svodki_bot_molchit(app: FastAPI, book) -> None:
 def test_razdel_ne_vystavleny(app: FastAPI, book) -> None:
     owner = register(app)
     empty = owner.get(f"{BASE}/bills").json()
-    assert empty == {"source": None, "items": [], "issued": [], "counts": None, "channel": None}
+    assert empty == {"source": None, "items": [], "issued": [], "counts": None, "channel": None, "can_edit": True}
     connect(owner)
     data = owner.get(f"{BASE}/bills").json()
     assert data["counts"]["overdue"] == 8 and data["counts"]["overdue_total"] == "891000"
