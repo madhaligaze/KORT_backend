@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from functools import cache
+
 from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
 
@@ -24,16 +26,29 @@ def finance_routers() -> tuple[APIRouter, ...]:
     """Все роутеры раздела - один список и для приложения, и для обхода."""
     from app.api.routes.finance import router as finance_router
     from app.api.routes.finance_contracts import router as contracts_router
+    from app.api.routes.finance_journal import router as journal_router
     from app.api.routes.finance_looks import router as looks_router
     from app.api.routes.finance_onec import router as onec_router
     from app.api.routes.finance_people import router as people_router
     from app.api.routes.finance_support import router as support_router
     from app.api.routes.finance_trash import router as trash_router
 
-    return (finance_router, contracts_router, people_router, trash_router, looks_router, support_router, onec_router)
+    return (
+        finance_router, contracts_router, people_router, trash_router, looks_router, support_router, onec_router,
+        journal_router,
+    )
 
 
+@cache
 def finance_app() -> FastAPI:
+    """Одно приложение на процесс.
+
+    Сборка - разбор каждого из почти двухсот маршрутов, 0,4 с; заново в
+    каждом тесте это шестая часть времени набора долей (замер 30.10.2026).
+    Своего состояния у приложения нет: база подменяется в модуле `db`,
+    сеанс живёт в cookie своего `TestClient`, маршруты и зависимости
+    одни и те же. Тест, которому нужно менять само приложение, собирает своё.
+    """
     application = FastAPI()
     for router in finance_routers():
         application.include_router(router, prefix=PREFIX)

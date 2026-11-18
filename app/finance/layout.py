@@ -7,7 +7,7 @@
 парсер начинал читать соседнюю ячейку. Это ломается двумя способами, и второй
 хуже первого:
 
-1. Громко: `verify_layout` замечал несовпадение и валил чтение. Дашборд писал
+1. Громко: `verify_layout` замечал несовпадение и валил чтение. Экран писал
    «таблица не читается» и показывал числа от прошлого удачного чтения. Так
    в августе 2026 лёг мастер-лист - в блок АВР добавили четыре колонки
    («АВР (клиент принял)», «Дата АВР (клиент принял)», «ЭСФ (отпр.)»,
@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Iterable, Mapping, Sequence
 
 log = logging.getLogger(__name__)
@@ -99,11 +100,22 @@ class Column:
     required: bool = True
     strict: bool = False
 
+    @cached_property
+    def _normed(self) -> frozenset[str]:
+        # Названия колонки - постоянные, а сверяют их с каждой ячейкой каждой
+        # строки-кандидата в шапку: журнал на шесть тысяч строк нормализовал
+        # одни и те же названия миллион раз - половина времени разбора.
+        return frozenset(norm(name) for name in self.names)
+
+    @cached_property
+    def _squashed(self) -> tuple[str, ...]:
+        return tuple(squash(name) for name in self.names)
+
     def matches_exact(self, header: str) -> bool:
-        return any(norm(header) == norm(name) for name in self.names)
+        return norm(header) in self._normed
 
     def matches_squashed(self, header: str) -> bool:
-        return any(squash(header) == squash(name) for name in self.names)
+        return squash(header) in self._squashed
 
     def matches_loose(self, header: str) -> bool:
         """Один заголовок - начало другого. «Сумма Договора» ↔ «Сумма Дог.».
@@ -114,8 +126,7 @@ class Column:
         actual = squash(header)
         if len(actual) < 4:
             return False
-        for name in self.names:
-            wanted = squash(name)
+        for wanted in self._squashed:
             if len(wanted) < 4:
                 continue
             if actual.startswith(wanted) or wanted.startswith(actual):
@@ -201,7 +212,7 @@ class Layout:
         return "; ".join(item.describe() for item in self.drift)
 
     def to_dict(self) -> dict[str, Any]:
-        """Для API: что именно уехало. Дашборд показывает это как примечание."""
+        """Для API: что именно уехало. Экран показывает это как примечание."""
         return {
             "sheet": self.sheet,
             "width": self.width,
@@ -248,7 +259,7 @@ def _pick(column: Column, found: list[int], how: str) -> int:
     if how == "loose":
         raise LayoutError(
             f"«{column.title}»: точного заголовка нет, а похожих сразу несколько "
-            f"(позиции {', '.join(map(str, found))}). Уточните название в книге "
+            f"(позиции {', '.join(map(str, found))}). Уточните название в таблице "
             "или добавьте его в `names` этой колонки."
         )
     if column.hint is not None:
@@ -275,7 +286,7 @@ def resolve_layout(sheet: str, columns: Iterable[Column], header: Sequence[str])
 
     Падает только на том, что действительно нечитаемо: пропала обязательная
     колонка, или её название стало неоднозначным. Сдвиг колонок - не ошибка:
-    он попадает в `Layout.drift`, лист читается дальше, а дашборд показывает
+    он попадает в `Layout.drift`, лист читается дальше, а экран показывает
     примечание о том, что книга изменилась.
     """
     headers = [str(value or "") for value in header]
@@ -341,7 +352,7 @@ def resolve_layout(sheet: str, columns: Iterable[Column], header: Sequence[str])
     )
     if drift:
         # Не ошибка, но обязано быть видно в логах: книга изменилась, и когда
-        # цифры на дашборде поедут, это первое, на что надо смотреть.
+        # цифры поедут, это первое, на что надо смотреть.
         log.warning("BBC: лист «%s» - колонки сдвинулись: %s", sheet, layout.describe_drift())
     if absent:
         log.info("BBC: лист «%s» - необязательные колонки отсутствуют: %s", sheet, ", ".join(absent))

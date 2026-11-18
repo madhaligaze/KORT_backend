@@ -30,7 +30,7 @@
   разового договора она одна, у растянутого по месяцам - оплаты в каждой.
 
 Суммы не хранятся: книгу читает сервер и держит ответ в памяти
-(`CACHE_TTL`), как лист дашборда. Квота Google - 60 чтений в минуту на
+(`CACHE_TTL`). Квота Google - 60 чтений в минуту на
 аккаунт, поэтому чтение одно на компанию за раз и не чаще срока кэша.
 """
 from __future__ import annotations
@@ -406,7 +406,7 @@ def connect(
     spreadsheet_id = spreadsheet_id_of(link)
     tab = (worksheet or "").strip()
     if not spreadsheet_id or not tab:
-        raise SummaryError("Нужны ссылка на книгу и название листа")
+        raise SummaryError("Нужны ссылка на таблицу и название листа")
     index = _read(spreadsheet_id, tab)
     source = session.get(SummarySource, workspace_id)
     if source is None:

@@ -1,22 +1,16 @@
-"""HTTP-маршруты раздела «Финансы».
+"""HTTP-маршруты учёта KORT.
 
-Своя авторизация, а не общая с дашбордом
-────────────────────────────────────────
-Раньше здесь стояли `require_block_user("finance")` и `require_admin` из
-`app.bbc.deps`, то есть в раздел пускали учётки BBC Dashboard. Это было неверно
-по существу: в «Финансах» каждая компания регистрируется сама и ведёт свой
-учёт, к BBC отношения не имея, - а BBC однажды может сам переехать сюда, и
-тогда зависимость смотрела бы от общего к частному.
-
-Теперь у раздела свои учётки (`app.finance.auth`), и `app.bbc` этот файл не
-импортирует вовсе. Компания берётся **из сессии**, а не «по умолчанию»: один
+Учётки и компания
+─────────────────
+Каждая компания регистрируется сама и ведёт свой учёт; учётки - свои
+(`app.finance.auth`). Компания берётся **из сессии**, а не «по умолчанию»: один
 человек ведёт несколько компаний, и переключатель в шапке меняет контекст
 сессии.
 
 Обработчики - обычный `def`, а не `async def`: внутри синхронные SQLAlchemy и
 openpyxl, разбор файла на двадцать тысяч строк считается секундами. В
-`async def` это встало бы колом в цикле событий и подвесило заодно дашборд;
-обычный `def` FastAPI уводит в пул потоков.
+`async def` это встало бы колом в цикле событий и подвесило заодно остальные
+запросы; обычный `def` FastAPI уводит в пул потоков.
 """
 from __future__ import annotations
 
@@ -88,7 +82,7 @@ def _guard() -> None:
 
 
 #: Окружения, где `Secure` на cookie означал бы «войти нельзя»: локальный
-#: запуск и тесты ходят по http. Тот же список и та же причина, что у дашборда.
+#: запуск и тесты ходят по http.
 _INSECURE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
 
 
@@ -344,9 +338,8 @@ def _money(value: Any, *, field: str) -> Decimal:
 
 # ── Учётки и компании ────────────────────────────────────────────────────────
 #
-# Раздел живёт сам по себе: регистрация открыта, компания создаётся вместе с
-# первым пользователем, он её владелец. Ни одной проверки прав дашборда здесь
-# нет и не должно появиться.
+# Регистрация открыта: компания создаётся вместе с первым пользователем, он её
+# владелец.
 
 
 class RegisterIn(BaseModel):
@@ -1677,28 +1670,37 @@ def delete_operation(operation_id: UUID, member: Member = Depends(require_access
 @router.get("/grid")
 def read_grid(
     member: Member = Depends(require_access("table")),
+    month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
     date_from: str | None = None,
     date_to: str | None = None,
+    firm: UUID | None = None,
+    accounts: str | None = None,
+    search: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Журнал как лист: шапка, строки и значения для выпадающих списков.
+    """Журнал как лист: колонки журнала финансистов, строки выписок по датам, списки значений.
 
     `seq` - номер изменения журнала, с которого лист начинает опрос
     (`/grid/changes`); читается до выборки строк, как у реестра договоров.
     """
+    from app.finance import journal as journal_module
+
     _guard()
     with finance_session() as session:
         workspace = _workspace(session, member)
         seq = live_module.current_seq(session, workspace.id)
-        flt = service.OperationFilter(
+        flt = journal_module.JournalFilter(
+            month=month or "",
             date_from=_parse_date(date_from, field="date_from"),
             date_to=_parse_date(date_to, field="date_to"),
+            firm=firm,
+            account_ids=[UUID(item) for item in (accounts or "").split(",") if item.strip()],
+            search=search or "",
         )
-        operations, total = service.list_operations(
-            session, workspace.id, flt, limit=min(limit or finance_settings.grid_max_rows, finance_settings.grid_max_rows)
+        payload = journal_module.grid_payload(
+            session, workspace, flt, limit=min(limit or finance_settings.grid_max_rows, finance_settings.grid_max_rows)
         )
-        payload = grid_module.build_grid(session, workspace, operations)
-        payload["total"] = total
+        payload["total"] = len({row["operation_id"] for row in payload["rows"]})
         payload["seq"] = seq
         return payload
 
@@ -1717,7 +1719,8 @@ def grid_changes(since: int = Query(0, ge=0), member: Member = Depends(require_a
 
 
 class CellPatch(BaseModel):
-    operation_id: UUID
+    #: Строка листа: id записи, у перевода - со стороной («<id>:in»).
+    operation_id: str
     column: str
     value: Any = None
     version: int | None = None
@@ -1731,7 +1734,11 @@ def patch_cell(body: CellPatch, member: Member = Depends(require_access("table",
         # Правка ячейки - та же правка операции, что из карточки, и пишется в
         # журнал так же: с состоянием до и после и с откатом. Раньше лист
         # менял операцию молча, и «кто поменял сумму» по нему было не узнать.
-        existing = session.get(Operation, body.operation_id)
+        try:
+            operation_id, side = grid_module.split_line_id(body.operation_id)
+        except FinanceError as exc:
+            raise _fail(exc) from exc
+        existing = session.get(Operation, operation_id)
         before = (
             history.snapshot(existing)
             if existing is not None and existing.workspace_id == workspace.id
@@ -1757,7 +1764,8 @@ def patch_cell(body: CellPatch, member: Member = Depends(require_access("table",
         # ячейки по месту, а не перечитывает журнал (см. `grid.row_of`).
         return {
             **_operation_out(operation, names=names, splits=splits, tags=tags),
-            "row": grid_module.row_of(session, workspace, operation),
+            "row": grid_module.row_of(session, workspace, operation, side),
+            "rows": grid_module.rows_of(session, workspace, operation),
         }
 
 
@@ -2387,10 +2395,10 @@ def _board_of(session: Any, workspace_id: UUID) -> tuple[Any, tuple[str, str]]:
 
     source = source_of(session, workspace_id)
     if source is None:
-        raise HTTPException(status_code=404, detail="Книга-сводка не подключена")
+        raise HTTPException(status_code=404, detail="Сводная таблица не подключена")
     board, error = bills_module.current(session, workspace_id)
     if board is None:
-        raise HTTPException(status_code=503, detail=error or "Книга-сводка ещё читается - попробуйте через минуту")
+        raise HTTPException(status_code=503, detail=error or "Сводная таблица ещё читается - попробуйте через минуту")
     return board, (source.spreadsheet_id, source.worksheet)
 
 
@@ -2402,7 +2410,7 @@ def _bill_of(session: Any, workspace_id: UUID, bill_id: str) -> tuple[Any, tuple
     bill = board.find(bill_id)
     if bill is None:
         raise HTTPException(
-            status_code=404, detail="Такого счёта в книге-сводке нет - строку могли переименовать или удалить"
+            status_code=404, detail="Такого счёта в сводной таблице нет - строку могли переименовать или удалить"
         )
     return bill, summary
 
@@ -2422,7 +2430,7 @@ def _journal_bill(member: Member, bill: Any, place: Any, *, kind: str, title: st
             entity="bill",
             title=title,
             before=before,
-            after={**after, "книга": place.book.title, "вкладка": place.tab.title, "строка": place.row},
+            after={**after, "таблица": place.book.title, "вкладка": place.tab.title, "строка": place.row},
             actor=_actor(member),
         )
 
@@ -2539,7 +2547,7 @@ def write_bill(bill_id: str, body: BillBookIn, member: Member = Depends(require_
                 bill,
                 exc.place,
                 kind="bill.book.fail",
-                title=f"запись в книгу не удалась: {where}",
+                title=f"запись в таблицу не удалась: {where}",
                 before={},
                 after={"ошибка": str(exc), "поля": [bill_book.TITLES[name] for name in exc.changed]},
             )
@@ -2550,11 +2558,11 @@ def write_bill(bill_id: str, body: BillBookIn, member: Member = Depends(require_
     if saved.changed:
         number, issued_at = saved.after["bill_no"], saved.after["bill_date"]
         if number and not saved.before["bill_no"]:
-            title = f"счёт выставлен в книге: {where} - № {number}" + (f" от {issued_at}" if issued_at else "")
+            title = f"счёт выставлен в таблице: {where} - № {number}" + (f" от {issued_at}" if issued_at else "")
         elif saved.before["bill_no"] and not number:
-            title = f"отметка «выставлен» снята в книге: {where}"
+            title = f"отметка «выставлен» снята в таблице: {where}"
         else:
-            title = f"счёт исправлен в книге: {where}"
+            title = f"счёт исправлен в таблице: {where}"
         _journal_bill(
             member,
             bill,
